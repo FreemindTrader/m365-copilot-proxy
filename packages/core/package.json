@@ -1,0 +1,30 @@
+{
+  "name": "@opencode-m365/core",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "types": "./dist/index.d.mts"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsdown src/index.ts --format esm --dts"
+  },
+  "dependencies": {
+    "@azure/msal-node": "^5.1.1",
+    "otpauth": "^9.5.0",
+    "playwright": "^1.58.2",
+    "ws": "^8.20.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

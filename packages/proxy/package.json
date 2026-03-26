@@ -1,0 +1,27 @@
+{
+  "name": "@opencode-m365/proxy",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "m365-proxy": "./dist/server.mjs"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/server.mjs",
+      "types": "./dist/server.d.mts"
+    }
+  },
+  "main": "./dist/server.mjs",
+  "types": "./dist/server.d.mts",
+  "files": ["dist"],
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "build": "tsdown src/server.ts --format esm --dts"
+  },
+  "dependencies": {
+    "@opencode-m365/core": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

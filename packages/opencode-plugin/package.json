@@ -1,0 +1,23 @@
+{
+  "name": "opencode-m365-auth",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "types": "./dist/index.d.mts"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsdown src/index.ts --format esm --dts --external @opencode-ai/plugin"
+  },
+  "dependencies": {
+    "@opencode-m365/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "*"
+  }
+}

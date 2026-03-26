@@ -1,0 +1,7 @@
+node_modules
+dist
+token.txt
+msal-cache.json
+secrets.json
+*.har
+.env
