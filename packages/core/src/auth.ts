@@ -18,6 +18,9 @@ const SCOPES = [
   "https://substrate.office.com/sydney/sydney.readwrite",
 ];
 
+import { createLogger } from "./log.js";
+const log = createLogger("auth");
+
 const CONFIG_DIR = join(homedir(), ".config", "opencode-m365");
 
 function resolveFile(envVar: string, defaultName: string): string {
@@ -86,9 +89,7 @@ async function exchangeCode(
     codeVerifier: verifier,
   });
   saveCache(app);
-  console.log(
-    `[auth] Logged in as ${result.account?.name} (${result.account?.username})`,
-  );
+  log.info(`Logged in as ${result.account?.name} (${result.account?.username})`);
   return result.accessToken;
 }
 
@@ -146,7 +147,7 @@ export async function loginAutomated(
   const app = getApp();
   const { authUrl, verifier } = await buildAuthUrl(app);
 
-  console.log("[auth] Starting automated login...");
+  log.info("Starting automated login...");
 
   const { TOTP } = await import("otpauth");
   const { chromium } = await import("playwright");
@@ -160,17 +161,17 @@ export async function loginAutomated(
   try {
     await page.goto(authUrl);
 
-    console.log("[auth] Entering email...");
+    log.info("Entering email...");
     await page.waitForSelector('input[type="email"]', { timeout: 15000 });
     await page.fill('input[type="email"]', email);
     await page.click('input[type="submit"]');
 
-    console.log("[auth] Entering password...");
+    log.info("Entering password...");
     await page.waitForSelector('input[type="password"]', { timeout: 15000 });
     await page.fill('input[type="password"]', password);
     await page.click('input[type="submit"]');
 
-    console.log("[auth] Entering MFA code...");
+    log.info("Entering MFA code...");
     const totp = new TOTP({ secret: mfaSecret });
     const otpCode = totp.generate();
 
@@ -185,13 +186,13 @@ export async function loginAutomated(
       // "Stay signed in?" may not appear
     }
 
-    console.log("[auth] Waiting for redirect...");
+    log.info("Waiting for redirect...");
     await page.waitForURL("**/oauth2/nativeclient**", { timeout: 15000 });
 
     const authCode = new URL(page.url()).searchParams.get("code");
     if (!authCode) throw new Error("No auth code in redirect URL");
 
-    console.log("[auth] Got auth code, exchanging for token...");
+    log.info("Got auth code, exchanging for token...");
     return await exchangeCode(app, authCode, verifier);
   } finally {
     await browser.close();
@@ -214,7 +215,7 @@ export function loadSecrets(): {
 export async function getToken(): Promise<string> {
   const silent = await getTokenSilent();
   if (silent) {
-    console.log("[auth] Token refreshed silently");
+    log.info("Token refreshed silently");
     return silent;
   }
 
@@ -227,7 +228,7 @@ export async function getToken(): Promise<string> {
         secrets.mfaSecret,
       );
     } catch (err: any) {
-      console.error("[auth] Automated login failed:", err.message);
+      log.error("Automated login failed:", err.message);
     }
   }
 

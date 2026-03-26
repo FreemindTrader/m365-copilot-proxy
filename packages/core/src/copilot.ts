@@ -11,7 +11,10 @@ import {
   JwtClaims,
 } from "./schemas.js";
 
+import { createLogger } from "./log.js";
+
 const RS = "\x1E";
+const log = createLogger("copilot");
 
 const VARIANTS = [
   "EnableMcpServerWidgets",
@@ -104,6 +107,7 @@ export interface CopilotStream {
 }
 
 export function copilotChat(token: string, text: string, model: string = "m365-copilot"): Promise<CopilotStream> {
+  log.info(`Chat request: model=${model}, text=${JSON.stringify(text.slice(0, 200))}`);
   const claims = decodeJwt(token);
   const sessionId = crypto.randomUUID();
   const conversationId = crypto.randomUUID();
@@ -204,11 +208,13 @@ export function copilotChat(token: string, text: string, model: string = "m365-c
     let handshakeDone = false;
 
     ws.on("open", () => {
+      log.debug("WebSocket connected, sending handshake");
       ws.send(JSON.stringify({ protocol: "json", version: 1 }) + RS);
     });
 
     ws.on("message", (data: WebSocket.RawData) => {
       const raw = data.toString();
+      log.debug("WS recv:", raw.slice(0, 500));
       const frames = raw.split(RS).filter((f) => f.length > 0);
 
       for (const frame of frames) {
@@ -241,7 +247,7 @@ export function copilotChat(token: string, text: string, model: string = "m365-c
 
     ws.on("error", (err: Error) => {
       const msg = err.message || "connection failed";
-      console.error("[copilot] WS error:", msg);
+      log.error("WS error:", msg);
       if (!handshakeDone) {
         reject(new Error(`WebSocket error: ${msg}`));
       } else {
@@ -250,6 +256,8 @@ export function copilotChat(token: string, text: string, model: string = "m365-c
     });
 
     ws.on("close", () => {
+      log.info("WS closed, fullText length:", fullText.length);
+      log.debug("Final response:", fullText.slice(0, 1000));
       onDone?.();
     });
 
@@ -340,7 +348,9 @@ export function copilotChat(token: string, text: string, model: string = "m365-c
         type: 1,
       };
 
-      ws.send(JSON.stringify(chatMsg) + RS + JSON.stringify(metrics) + RS);
+      const payload = JSON.stringify(chatMsg) + RS + JSON.stringify(metrics) + RS;
+      log.debug("WS send:", payload.slice(0, 500));
+      ws.send(payload);
       // Resolve with the stream now that we've sent the message
       resolve(stream);
     }
@@ -401,13 +411,11 @@ export function copilotChat(token: string, text: string, model: string = "m365-c
             continue;
           }
 
-          // Try throttling (just log)
+          // Try throttling
           const throttle = ThrottlingUpdate.safeParse(arg);
           if (throttle.success) {
             const t = throttle.data.throttling;
-            console.log(
-              `[copilot] ${t.numUserMessagesInConversation}/${t.maxNumUserMessagesInConversation} messages`,
-            );
+            log.info(`Throttle: ${t.numUserMessagesInConversation}/${t.maxNumUserMessagesInConversation} messages`);
           }
         }
       }

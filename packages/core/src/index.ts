@@ -18,4 +18,8 @@ export {
   ChatCompletionRequest,
   ChatMessage,
   JwtClaims,
+  ToolCall,
+  ToolDefinition,
 } from "./schemas.js";
+
+export { createLogger, LOG_PATH } from "./log.js";
