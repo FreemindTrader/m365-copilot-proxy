@@ -62,6 +62,20 @@ function getApp(): msal.PublicClientApplication {
 
 // --- PKCE helpers ---
 
+async function buildAuthUrlForScopes(app: msal.PublicClientApplication, scopes: string[]) {
+  const cryptoProvider = new msal.CryptoProvider();
+  const { verifier, challenge } = await cryptoProvider.generatePkceCodes();
+
+  const authUrl = await app.getAuthCodeUrl({
+    scopes,
+    redirectUri: REDIRECT_URI,
+    codeChallenge: challenge,
+    codeChallengeMethod: "S256",
+  });
+
+  return { authUrl, verifier };
+}
+
 async function buildAuthUrl(app: msal.PublicClientApplication) {
   const cryptoProvider = new msal.CryptoProvider();
   const { verifier, challenge } = await cryptoProvider.generatePkceCodes();
@@ -215,6 +229,7 @@ export function loadSecrets(): {
 export async function getTokenForScope(scopes: string[]): Promise<string | null> {
   const app = getApp();
   const accounts = await app.getTokenCache().getAllAccounts();
+  log.info(`getTokenForScope: ${scopes.join(",")} — ${accounts.length} accounts in cache`);
   if (accounts.length === 0) return null;
 
   try {
@@ -224,8 +239,65 @@ export async function getTokenForScope(scopes: string[]): Promise<string | null>
     });
     saveCache(app);
     return result.accessToken;
-  } catch {
-    return null;
+  } catch (err: any) {
+    // Silent failed — try automated login with stored credentials
+    log.info(`getTokenForScope: silent failed (${err.message}), trying automated login`);
+    const secrets = loadSecrets();
+    if (!secrets) return null;
+
+    try {
+      // Do a fresh PKCE flow for the new scope
+      const { authUrl, verifier } = await buildAuthUrlForScopes(app, scopes);
+      const { chromium } = await import("playwright");
+      const { TOTP } = await import("otpauth");
+
+      const browser = await chromium.launch({
+        headless: true,
+        executablePath: process.env.CHROMIUM_PATH,
+      });
+      const page = await browser.newPage();
+
+      try {
+        await page.goto(authUrl);
+        await page.waitForSelector('input[type="email"]', { timeout: 15000 });
+        await page.fill('input[type="email"]', secrets.email);
+        await page.click('input[type="submit"]');
+
+        await page.waitForSelector('input[type="password"]', { timeout: 15000 });
+        await page.fill('input[type="password"]', secrets.password);
+        await page.click('input[type="submit"]');
+
+        const totp = new TOTP({ secret: secrets.mfaSecret });
+        const otpCode = totp.generate();
+        await page.waitForSelector('input[name="otc"]', { timeout: 15000 });
+        await page.fill('input[name="otc"]', otpCode);
+        await page.click('input[type="submit"]');
+
+        try {
+          await page.waitForSelector('input[type="submit"]', { timeout: 5000 });
+          await page.click('input[type="submit"]');
+        } catch {}
+
+        await page.waitForURL("**/oauth2/nativeclient**", { timeout: 15000 });
+        const authCode = new URL(page.url()).searchParams.get("code");
+        if (!authCode) return null;
+
+        const result = await app.acquireTokenByCode({
+          code: authCode,
+          scopes,
+          redirectUri: REDIRECT_URI,
+          codeVerifier: verifier,
+        });
+        saveCache(app);
+        log.info(`Got token for scope: ${scopes.join(", ")}`);
+        return result.accessToken;
+      } finally {
+        await browser.close();
+      }
+    } catch (err: any) {
+      log.error("Automated scope login failed:", err.message);
+      return null;
+    }
   }
 }
 

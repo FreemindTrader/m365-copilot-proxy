@@ -2,8 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { createLogger } from "./log.js";
-import { getTokenForScope, getToken } from "./auth.js";
-import { decodeJwt } from "./copilot.js";
+import { getTokenForScope } from "./auth.js";
 
 const log = createLogger("agent");
 
@@ -11,9 +10,14 @@ const CONFIG_DIR = join(homedir(), ".config", "opencode-m365");
 const AGENT_CACHE_FILE = join(CONFIG_DIR, "agent-id.json");
 
 const POWERPLATFORM_SCOPES = ["https://api.powerplatform.com/.default"];
+const BAP_SCOPES = ["https://api.bap.microsoft.com/.default"];
+const BAP_API = "https://api.bap.microsoft.com";
 
 const AGENT_NAME = "opencode-m365-tool-agent";
 const AGENT_DESCRIPTION = "Auto-created agent for opencode tool calling";
+
+// Minimal 48x48 blue square PNG as base64 (required for publishing)
+const BOT_ICON_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAIAAADYYG7QAAAAB3RJTUUH6AMbAAAoLbOJEAAAABl0RVh0Q29tbWVudABDcmVhdGVkIHdpdGggR0lNUFeBDhcAAAAoSURBVFjD7cExAQAAAMKg9U9tDB+gAAAAAAAAAAAAAAAAAAAAAAAA/BgwMAAB/0LuMgAAAABJRU5ErkJggg==";
 
 function getAgentInstructions(): string {
   return `When you need to perform an action, you MUST output EXACTLY this format with NO other text:
@@ -32,9 +36,52 @@ Rules:
 7. For questions that don't need tools, respond with plain text only`;
 }
 
-function getEnvironmentUrl(tenantId: string): string {
-  const cleaned = tenantId.replace(/-/g, "");
-  return `https://default${cleaned}.df.environment.api.powerplatform.com`;
+async function getEnvironmentUrl(ppToken: string): Promise<string> {
+  // Query BAP API to discover the default environment
+  const res = await fetch(
+    `${BAP_API}/providers/Microsoft.BusinessAppPlatform/environments/~default?api-version=2023-06-01`,
+    {
+      headers: {
+        "Authorization": `Bearer ${ppToken}`,
+      },
+    },
+  );
+
+  if (!res.ok) {
+    throw new Error(`BAP API failed: ${res.status} ${await res.text()}`);
+  }
+
+  const data = await res.json();
+  const envName: string = data.name; // e.g. "Default-fa7f56d8-49c4-4327-b816-9a0eeaa273df"
+  const envId = envName.replace(/^Default-/i, "").replace(/-/g, "").toLowerCase();
+
+  // Microsoft constructs the subdomain as "default{envId}" but DNS resolution
+  // requires finding the correct label. Try the full ID first, fall back to
+  // progressively shorter versions if DNS doesn't resolve.
+  const base = `.df.environment.api.powerplatform.com`;
+  const candidates = [
+    `https://default${envId}${base}`,
+    `https://default${envId.slice(0, -2)}${base}`, // some tenants truncate last 2 chars
+  ];
+
+  for (const url of candidates) {
+    try {
+      const probe = await fetch(`${url}/copilotstudio/minimalBots/api?api-version=2022-03-01-preview`, {
+        method: "HEAD",
+        headers: { "Authorization": `Bearer ${ppToken}` },
+      });
+      // Any response (even 401/403) means the host resolved
+      log.info(`Resolved environment URL: ${url}`);
+      return url;
+    } catch {
+      log.info(`Environment URL candidate failed: ${url}`);
+    }
+  }
+
+  // Last resort: return the full version
+  const fallback = candidates[0];
+  log.info(`Using fallback environment URL: ${fallback}`);
+  return fallback;
 }
 
 interface CachedAgent {
@@ -85,6 +132,15 @@ async function createBot(envUrl: string, token: string): Promise<{ botId: string
           tools: [],
           conversationStarters: [],
           diagnostics: [],
+          instructions: {
+            $kind: "TemplateLine",
+            segments: [{
+              $kind: "TextSegment",
+              value: getAgentInstructions(),
+              diagnostics: [],
+            }],
+            diagnostics: [],
+          },
           knowledgeSources: { diagnostics: [], $kind: "SearchAllKnowledgeSources" },
           $kind: "GptComponentMetadata",
           gptCapabilities: {
@@ -128,6 +184,7 @@ async function createBot(envUrl: string, token: string): Promise<{ botId: string
       schemaName: "00000000-0000-0000-0000-000000000000",
       template: "gpt-1.1.0",
       $kind: "BotEntity",
+      iconBase64: BOT_ICON_BASE64,
     },
   };
 
@@ -140,26 +197,12 @@ async function createBot(envUrl: string, token: string): Promise<{ botId: string
   const data = await res.json();
   const botId = data.bot?.schemaName || data.bot?.cdsBotId;
   const componentId = data.botComponentChanges?.[0]?.component?.id;
-  return { botId, componentId };
+  const changeToken = data.changeToken;
+  return { botId, componentId, changeToken };
 }
 
-async function updateBotInstructions(envUrl: string, token: string, botId: string, componentId: string): Promise<void> {
-  // First get the current component to get the version/changeToken
-  const listRes = await ppFetch(`${envUrl}/copilotstudio/minimalBots/api/${botId}/components?api-version=2022-03-01-preview`, token, {
-    method: "POST",
-    body: JSON.stringify({ componentDeltaToken: "" }),
-  });
-  if (!listRes.ok) throw new Error(`Failed to get components: ${listRes.status}`);
-  const listData = await listRes.json();
-  const changeToken = listData.changeToken;
-
-  // Get current component state
-  const getRes = await ppFetch(`${envUrl}/copilotstudio/minimalBots/api/${botId}/components?api-version=2022-03-01-preview`, token, {
-    method: "POST",
-    body: JSON.stringify({ componentDeltaToken: changeToken }),
-  });
-
-  // Now update with instructions
+async function updateBotInstructions(envUrl: string, token: string, botId: string, componentId: string, changeToken: string): Promise<void> {
+  // Update with instructions using the changeToken from bot creation
   const updateBody = {
     botComponentChanges: [{
       component: {
@@ -213,35 +256,18 @@ async function updateBotInstructions(envUrl: string, token: string, botId: strin
   if (!res.ok) throw new Error(`Failed to update bot instructions: ${res.status} ${await res.text()}`);
 }
 
-async function resolveAgentId(copilotToken: string, botId: string): Promise<string | null> {
-  // Use GetGptList to find the full agent ID (includes metaOSSharedServicesTitleId)
-  const claims = decodeJwt(copilotToken);
-  const url = `https://substrate.office.com/m365Copilot//GetGptList?request=${encodeURIComponent(JSON.stringify({
-    optionsSets: ["flux_gpt_data_retriever_enterprise"],
-    traceId: "",
-  }))}`;
-
-  const res = await fetch(url, {
-    headers: {
-      "Authorization": `Bearer ${copilotToken}`,
-      "Origin": "https://m365.cloud.microsoft",
-    },
+async function publishBot(envUrl: string, token: string, botId: string): Promise<string> {
+  // Publish the bot to M365 Copilot — returns the TitleId needed for chat
+  const res = await ppFetch(`${envUrl}/copilotstudio/minimalBots/api/${botId}/publish?api-version=2022-03-01-preview`, token, {
+    method: "POST",
   });
 
-  if (!res.ok) {
-    log.error(`GetGptList failed: ${res.status}`);
-    return null;
-  }
-
+  if (!res.ok) throw new Error(`Failed to publish bot: ${res.status} ${await res.text()}`);
   const data = await res.json();
-  for (const gpt of data.gptList || []) {
-    // Match by botId in the gptId string
-    if (gpt.gptId?.includes(botId)) {
-      log.info(`Found agent in GPT list: ${gpt.name} → ${gpt.gptId}`);
-      return gpt.gptId;
-    }
-  }
-  return null;
+  const titleId: string = data.TitleId;
+  if (!titleId) throw new Error("Publish response missing TitleId");
+  log.info(`Published agent: TitleId=${titleId}`);
+  return titleId;
 }
 
 /**
@@ -256,19 +282,24 @@ export async function getOrCreateAgent(): Promise<string | null> {
     return cached.agentId;
   }
 
-  // Need PowerPlatform token
+  // Need BAP token for environment discovery
+  const bapToken = await getTokenForScope(BAP_SCOPES);
+  if (!bapToken) {
+    log.info("No BAP token available — skipping agent creation");
+    return null;
+  }
+
+  // Need PowerPlatform token for Copilot Studio APIs
   const ppToken = await getTokenForScope(POWERPLATFORM_SCOPES);
   if (!ppToken) {
     log.info("No PowerPlatform token available — skipping agent creation");
     return null;
   }
 
-  // Need M365 Copilot token for resolving the agent ID
-  const copilotToken = await getToken();
-  const claims = decodeJwt(copilotToken);
-  const envUrl = getEnvironmentUrl(claims.tid);
+  const envUrl = await getEnvironmentUrl(bapToken);
 
   try {
+    log.info(`PowerPlatform env URL: ${envUrl}`);
     // Check if our agent already exists
     const bots = await listBots(envUrl, ppToken);
     let botId: string | null = null;
@@ -283,34 +314,31 @@ export async function getOrCreateAgent(): Promise<string | null> {
       const created = await createBot(envUrl, ppToken);
       botId = created.botId;
       log.info(`Created agent: botId=${botId}`);
-
-      // Update with instructions
-      await updateBotInstructions(envUrl, ppToken, botId, created.componentId);
-      log.info("Agent instructions set");
     }
 
-    // Resolve the full agent ID via GetGptList
-    // The agent may take a moment to appear, so retry a few times
-    let agentId: string | null = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      agentId = await resolveAgentId(copilotToken, botId);
-      if (agentId) break;
-      log.info(`Agent not yet in GPT list, waiting... (attempt ${attempt + 1}/3)`);
-      await new Promise((r) => setTimeout(r, 5000));
+    // Publish to M365 Copilot and get the TitleId
+    let titleId: string;
+    try {
+      titleId = await publishBot(envUrl, ppToken, botId);
+    } catch (pubErr: any) {
+      // If publish fails (e.g. missing icon/instructions on legacy bot), delete and recreate
+      log.info(`Publish failed (${pubErr.message.slice(0, 100)}), deleting and recreating bot...`);
+      await ppFetch(`${envUrl}/copilotstudio/minimalBots/api/${botId}?api-version=2022-03-01-preview`, ppToken, {
+        method: "DELETE",
+      });
+      const created = await createBot(envUrl, ppToken);
+      botId = created.botId;
+      log.info(`Recreated agent: botId=${botId}`);
+      titleId = await publishBot(envUrl, ppToken, botId);
     }
-
-    if (!agentId) {
-      // Fallback: construct the ID using the pattern T_{teamsAppTitleId}.{botId}.gpt.default
-      // We can't know the teamsAppTitleId without GetGptList, so just skip
-      log.error("Could not resolve agent ID from GPT list. Agent may need time to propagate.");
-      return null;
-    }
+    const agentId = `${titleId}.${botId}.gpt.default`;
+    log.info(`Full agent ID: ${agentId}`);
 
     // Cache it
     saveCachedAgent({ agentId, botId, createdAt: new Date().toISOString() });
     return agentId;
   } catch (err: any) {
-    log.error("Agent creation failed:", err.message);
+    log.error("Agent creation failed:", err.message, err.cause?.message || "");
     return null;
   }
 }

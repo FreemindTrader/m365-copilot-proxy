@@ -1,0 +1,28 @@
+{
+  "name": "@opencode-m365/openclaw-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "M365 Copilot provider plugin for OpenClaw — use Microsoft 365 Copilot as your LLM backend",
+  "bin": {
+    "m365-openclaw-setup": "./dist/setup.mjs"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "types": "./dist/index.d.mts"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "files": ["dist", "skill"],
+  "scripts": {
+    "build": "tsdown src/index.ts src/setup.ts --format esm --dts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@opencode-m365/core": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

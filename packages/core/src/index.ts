@@ -25,4 +25,26 @@ export {
   ToolDefinition,
 } from "./schemas.js";
 
+export {
+  formatMessages,
+  formatToolDefinitions,
+  formatToolChoiceInstruction,
+  getMessageContent,
+  parseToolCalls,
+  TOOL_CALL_FENCE,
+  TOOL_CALL_FENCE_CLOSE,
+  type ParsedMessage,
+  type ToolDef,
+  type ToolChoice,
+  type ParsedToolCall,
+  type ParseResult,
+  type FormatOptions,
+} from "./tools.js";
+
+export {
+  createProxyServer,
+  type ProxyOptions,
+  type ProxyServer,
+} from "./proxy.js";
+
 export { createLogger, LOG_PATH } from "./log.js";

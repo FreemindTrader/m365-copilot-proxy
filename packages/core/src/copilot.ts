@@ -140,6 +140,7 @@ export function copilotChat(token: string, text: string, model: string = "m365-c
 
   return new Promise((resolve, reject) => {
     let fullText = "";
+    let deltaText = "";
     let receivedContent = false;
     let throttleInfo: { current: number; max: number } | null = null;
     let onDelta: ((text: string) => void) | null = null;
@@ -148,7 +149,9 @@ export function copilotChat(token: string, text: string, model: string = "m365-c
 
     const stream: CopilotStream = {
       get fullText() {
-        return fullText;
+        // Prefer whichever is longer — deltaText is accumulated from streaming deltas,
+        // fullText comes from MessageUpdate frames which may only have partial text
+        return deltaText.length >= fullText.length ? deltaText : fullText;
       },
       get hasContent() {
         return receivedContent;
@@ -432,6 +435,7 @@ export function copilotChat(token: string, text: string, model: string = "m365-c
           const delta = DeltaUpdate.safeParse(arg);
           if (delta.success) {
             receivedContent = true;
+            deltaText += delta.data.writeAtCursor;
             onDelta?.(delta.data.writeAtCursor);
             continue;
           }

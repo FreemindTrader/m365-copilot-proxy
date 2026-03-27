@@ -43,6 +43,12 @@ importers:
         specifier: ^8.18.1
         version: 8.18.1
 
+  packages/openclaw-plugin:
+    dependencies:
+      '@opencode-m365/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/opencode-plugin:
     dependencies:
       '@opencode-ai/plugin':
