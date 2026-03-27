@@ -190,7 +190,14 @@ describe("M365 Copilot tool calling (live)", () => {
 
     const parsed = parseToolCalls(fullText);
     console.log("Plain text response:", fullText.slice(0, 300));
-    expect(parsed.hasToolCalls).toBe(false);
-    expect(fullText.length).toBeGreaterThan(10);
+
+    // The model may use the "reply" tool for text responses (correct behavior)
+    // or respond with plain text. Both are acceptable.
+    if (parsed.hasToolCalls) {
+      const replyCall = parsed.toolCalls.find(tc => tc.function.name === "reply");
+      expect(replyCall).toBeDefined();
+    } else {
+      expect(fullText.length).toBeGreaterThan(10);
+    }
   }, 120000);
 });

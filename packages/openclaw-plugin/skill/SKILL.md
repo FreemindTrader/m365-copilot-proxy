@@ -17,10 +17,23 @@ The M365 Copilot proxy translates OpenAI-format chat completion requests into M3
 - **Tool calling**: Automatic translation of OpenAI tool_call format through prompt injection + fenced code block parsing
 - **Agent mode**: Uses a Copilot Studio agent for server-side system prompt control
 - **Streaming**: Full SSE streaming support
+- **Session reuse**: Conversations share a single M365 session, saving quota (600 msg limit per conversation)
+- **Delta messages**: Follow-up turns only send new messages, not the full history
 
 ## Setup
 
-Run `m365-openclaw-setup` to automatically configure OpenClaw with the M365 provider.
+Run `m365-openclaw-setup` to configure OpenClaw. Add `--start` to also launch the proxy:
+
+```sh
+# Configure only
+m365-openclaw-setup
+
+# Configure and start proxy
+m365-openclaw-setup --start
+
+# Configure with custom port
+m365-openclaw-setup --start 8080
+```
 
 ## Authentication
 

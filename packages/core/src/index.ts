@@ -49,6 +49,8 @@ export {
 
 export {
   handleChatCompletion,
+  HandlerContext,
+  createHandlerContext,
   type HandlerOptions,
 } from "./handler.js";
 

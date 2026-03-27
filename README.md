@@ -116,14 +116,15 @@ opencode run --model m365/m365-copilot "your prompt"
 ### 4. Use with OpenClaw
 
 ```sh
-# Auto-configure OpenClaw
-npx m365-openclaw-setup
+# Configure and start in one command
+m365-openclaw-setup --start
 
-# Start the proxy
+# Or configure only, then start separately
+m365-openclaw-setup
 m365-proxy 4141
-
-# Use in OpenClaw with model: m365/m365-copilot
 ```
+
+The proxy uses session reuse and delta messages — follow-up turns only send new messages, saving M365 quota. New conversations are detected automatically when the message array shrinks or the first user message changes.
 
 ### 5. Use as standalone proxy
 

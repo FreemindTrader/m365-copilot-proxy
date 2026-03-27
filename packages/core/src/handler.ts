@@ -8,20 +8,79 @@ import type { z } from "zod/v4";
 
 const log = createLogger("handler");
 
-let cachedAgentId: string | null | undefined = undefined;
-let activeSession: CopilotSession | null = null;
-// How many messages from the OpenAI messages array we've already sent to M365
-let sentMessageCount = 0;
-
-export interface HandlerOptions {
-  /** Pre-resolved auth token. If not provided, getToken() is called. */
-  getToken?: () => Promise<string>;
-  /** Whether to attempt agent resolution. Default: true. */
-  useAgent?: boolean;
-}
-
 type ChatBody = z.infer<typeof ChatCompletionRequest>;
 type ParsedMessage = ChatBody["messages"][number];
+
+// --- HandlerContext: holds session state across requests ---
+
+export class HandlerContext {
+  activeSession: CopilotSession | null = null;
+  sentMessageCount = 0;
+  cachedAgentId: string | null | undefined = undefined;
+  /** Hash of the first user message — used to detect new conversations */
+  private firstUserMessageHash: string | null = null;
+
+  /**
+   * Check if this request is a new conversation or a continuation.
+   * New conversation if:
+   *   - messages array is shorter than what we've sent (user started fresh)
+   *   - first user message changed (different conversation)
+   */
+  shouldResetSession(messages: ParsedMessage[]): boolean {
+    if (!this.activeSession) return false; // no session to reset
+
+    // Messages shrunk — definitely a new conversation
+    if (messages.length < this.sentMessageCount) {
+      log.info(`Conversation reset: messages shrunk (${messages.length} < ${this.sentMessageCount})`);
+      return true;
+    }
+
+    // Check if the first user message changed
+    const firstUser = messages.find(m => m.role === "user");
+    const hash = firstUser ? simpleHash(getMessageContent(firstUser)) : null;
+    if (this.firstUserMessageHash !== null && hash !== this.firstUserMessageHash) {
+      log.info("Conversation reset: first user message changed");
+      return true;
+    }
+
+    return false;
+  }
+
+  /** Update tracking after a successful request */
+  trackMessages(messages: ParsedMessage[]) {
+    this.sentMessageCount = messages.length;
+    if (this.firstUserMessageHash === null) {
+      const firstUser = messages.find(m => m.role === "user");
+      this.firstUserMessageHash = firstUser ? simpleHash(getMessageContent(firstUser)) : null;
+    }
+  }
+
+  /** Reset session state for a new conversation */
+  reset() {
+    this.activeSession = null;
+    this.sentMessageCount = 0;
+    this.firstUserMessageHash = null;
+    // Keep cachedAgentId — agent persists across conversations
+  }
+}
+
+function simpleHash(str: string): string {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+  }
+  return String(hash);
+}
+
+/** Create a new handler context for independent session tracking */
+export function createHandlerContext(): HandlerContext {
+  return new HandlerContext();
+}
+
+// Default module-level context (used by opencode-plugin for backward compat)
+const defaultContext = new HandlerContext();
+
+// --- Message formatting ---
 
 /**
  * Format only the new messages since the last turn.
@@ -45,12 +104,23 @@ function formatDeltaMessages(messages: ParsedMessage[]): string {
       const callId = m.tool_call_id || "?";
       parts.push(`[tool result for ${name} (${callId})]\n${getMessageContent(m)}`);
     } else if (m.role === "system") {
-      // Skip system messages on follow-up turns — agent has them
+      // Skip system messages on follow-up turns
     } else {
       parts.push(`[${m.role}]\n${getMessageContent(m)}`);
     }
   }
   return parts.join("\n\n");
+}
+
+// --- Main handler ---
+
+export interface HandlerOptions {
+  /** Pre-resolved auth token. If not provided, getToken() is called. */
+  getToken?: () => Promise<string>;
+  /** Whether to attempt agent resolution. Default: true. */
+  useAgent?: boolean;
+  /** Session context. Default: module-level shared context. */
+  context?: HandlerContext;
 }
 
 /**
@@ -60,6 +130,7 @@ function formatDeltaMessages(messages: ParsedMessage[]): string {
  *
  * First turn: sends full prompt (system + tools + few-shot + messages).
  * Follow-up turns: sends only new messages (tool results + user message).
+ * New conversation detected: resets session automatically.
  */
 export async function handleChatCompletion(
   body: ChatBody,
@@ -67,6 +138,7 @@ export async function handleChatCompletion(
 ): Promise<Response> {
   const resolveToken = options.getToken ?? getToken;
   const useAgent = options.useAgent !== false;
+  const ctx = options.context ?? defaultContext;
 
   let token: string;
   try {
@@ -78,43 +150,45 @@ export async function handleChatCompletion(
   const hasTools = body.tools && body.tools.length > 0 && body.tool_choice !== "none";
   const model = body.model;
 
-  // Resolve agent ID lazily
-  if (useAgent && cachedAgentId === undefined) {
+  // Resolve agent ID lazily (shared across conversations)
+  if (useAgent && ctx.cachedAgentId === undefined) {
     try {
-      cachedAgentId = await getOrCreateAgent();
-      if (cachedAgentId) log.info(`Using agent: ${cachedAgentId}`);
+      ctx.cachedAgentId = await getOrCreateAgent();
+      if (ctx.cachedAgentId) log.info(`Using agent: ${ctx.cachedAgentId}`);
       else log.info("No agent available, using prompt injection only");
     } catch {
-      cachedAgentId = null;
+      ctx.cachedAgentId = null;
     }
   }
 
-  // Create or reuse session
-  const isFirstTurn = !activeSession;
-  if (!activeSession) {
-    activeSession = new CopilotSession(cachedAgentId ? { agentId: cachedAgentId } : undefined);
-    sentMessageCount = 0;
+  // Detect new conversation and reset if needed
+  if (ctx.shouldResetSession(body.messages)) {
+    ctx.reset();
   }
 
+  // Create session if needed
+  const isFirstTurn = !ctx.activeSession;
+  if (!ctx.activeSession) {
+    ctx.activeSession = new CopilotSession(ctx.cachedAgentId ? { agentId: ctx.cachedAgentId } : undefined);
+  }
+
+  // Format message: full prompt on first turn, delta on follow-ups
   let text: string;
-  if (isFirstTurn || sentMessageCount === 0) {
-    // First turn: full prompt with system/tools/few-shot/all messages
+  if (isFirstTurn || ctx.sentMessageCount === 0) {
     text = formatMessages(body.messages, body.tools, body.tool_choice);
-    log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${activeSession.turnCount}, mode=full, agent=${!!cachedAgentId}`);
+    log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${ctx.activeSession.turnCount}, mode=full, agent=${!!ctx.cachedAgentId}`);
   } else {
-    // Follow-up: only send new messages since last turn
-    const newMessages = body.messages.slice(sentMessageCount);
+    const newMessages = body.messages.slice(ctx.sentMessageCount);
     if (newMessages.length > 0) {
       text = formatDeltaMessages(newMessages);
-      log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, new=${newMessages.length}, turn=${activeSession.turnCount}, mode=delta, agent=${!!cachedAgentId}`);
+      log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, new=${newMessages.length}, turn=${ctx.activeSession.turnCount}, mode=delta, agent=${!!ctx.cachedAgentId}`);
     } else {
-      // No new messages (retry?) — send full prompt
       text = formatMessages(body.messages, body.tools, body.tool_choice);
-      log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${activeSession.turnCount}, mode=full-retry, agent=${!!cachedAgentId}`);
+      log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${ctx.activeSession.turnCount}, mode=full-retry, agent=${!!ctx.cachedAgentId}`);
     }
   }
 
-  sentMessageCount = body.messages.length;
+  ctx.trackMessages(body.messages);
   log.debug("Formatted prompt:", text.slice(0, 1000));
 
   const completionId = `chatcmpl-${crypto.randomUUID()}`;
@@ -122,18 +196,18 @@ export async function handleChatCompletion(
 
   let copilotStream;
   try {
-    copilotStream = await activeSession.chat(token, text, model);
+    copilotStream = await ctx.activeSession.chat(token, text, model);
   } catch (err: any) {
     // Session might be stale — reset and retry with full prompt
     log.info("Session error, resetting:", err.message);
-    activeSession = new CopilotSession(cachedAgentId ? { agentId: cachedAgentId } : undefined);
-    sentMessageCount = 0;
+    ctx.reset();
+    ctx.activeSession = new CopilotSession(ctx.cachedAgentId ? { agentId: ctx.cachedAgentId } : undefined);
     const fullText = formatMessages(body.messages, body.tools, body.tool_choice);
     try {
-      copilotStream = await activeSession.chat(token, fullText, model);
-      sentMessageCount = body.messages.length;
+      copilotStream = await ctx.activeSession.chat(token, fullText, model);
+      ctx.trackMessages(body.messages);
     } catch (retryErr: any) {
-      activeSession = null;
+      ctx.reset();
       return jsonResponse(502, { error: { message: retryErr.message, type: "upstream_error" } });
     }
   }
@@ -158,14 +232,12 @@ export async function handleChatCompletion(
     const parsed = parseToolCalls(fullText);
     log.info(`Parse result: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
 
-    // Handle "reply" tool calls — these are the agent's way of producing text responses.
-    // Convert them to plain text instead of forwarding as tool calls.
+    // Handle "reply" tool calls — convert to plain text
     if (parsed.hasToolCalls) {
       const replyCall = parsed.toolCalls.find(tc => tc.function.name === "reply");
       const realToolCalls = parsed.toolCalls.filter(tc => tc.function.name !== "reply");
 
       if (replyCall && realToolCalls.length === 0) {
-        // Pure text response via reply tool
         let replyText: string;
         try {
           const args = JSON.parse(replyCall.function.arguments);
@@ -185,7 +257,6 @@ export async function handleChatCompletion(
         }
       }
 
-      // If there are real tool calls (possibly mixed with reply), forward the real ones
       if (realToolCalls.length > 0) {
         parsed.toolCalls = realToolCalls;
       }

@@ -3,14 +3,18 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { generateOpenClawConfig } from "./index.js";
+import { generateOpenClawConfig, startForOpenClaw } from "./index.js";
 import { getToken, createLogger } from "@opencode-m365/core";
 
 const log = createLogger("openclaw-setup");
 
 const OPENCLAW_CONFIG_DIR = join(homedir(), ".openclaw");
 const OPENCLAW_CONFIG_FILE = join(OPENCLAW_CONFIG_DIR, "openclaw.json");
-const PORT = parseInt(process.argv[2] || "4141", 10);
+
+const args = process.argv.slice(2);
+const startFlag = args.includes("--start");
+const portArg = args.find(a => /^\d+$/.test(a));
+const PORT = parseInt(portArg || "4141", 10);
 
 async function main() {
   console.log("M365 Copilot → OpenClaw Setup");
@@ -72,17 +76,30 @@ async function main() {
     console.log("3. Skill file not found, skipping skill install\n");
   }
 
-  // Step 5: Print usage instructions
-  console.log("Setup complete! To use M365 Copilot with OpenClaw:\n");
-  console.log(`  1. Start the proxy:  m365-proxy ${PORT}`);
-  console.log("  2. Start OpenClaw:   openclaw");
-  console.log("  3. Select model:     m365/m365-copilot (or any m365/* model)\n");
+  // Step 5: Print usage or start proxy
   console.log("Available models:");
   for (const model of config.models.providers.m365.models) {
     const reasoning = model.reasoning ? " (reasoning)" : "";
     console.log(`  - m365/${model.id}: ${model.name}${reasoning}`);
   }
-  console.log("\nApply config: openclaw gateway config.apply --file ~/.openclaw/openclaw.json");
+
+  if (startFlag) {
+    console.log(`\n4. Starting proxy on port ${PORT}...\n`);
+    const { proxy } = await startForOpenClaw({ port: PORT });
+    console.log(`M365 Copilot proxy listening on http://localhost:${proxy.port}`);
+    console.log("Press Ctrl+C to stop.\n");
+    // Keep process alive
+    process.on("SIGINT", async () => {
+      await proxy.close();
+      process.exit(0);
+    });
+  } else {
+    console.log("\nSetup complete! To use M365 Copilot with OpenClaw:\n");
+    console.log(`  1. Start the proxy:  m365-proxy ${PORT}  (or: m365-openclaw-setup --start)`);
+    console.log("  2. Start OpenClaw:   openclaw");
+    console.log("  3. Select model:     m365/m365-copilot (or any m365/* model)\n");
+    console.log("Apply config: openclaw gateway config.apply --file ~/.openclaw/openclaw.json");
+  }
 }
 
 main().catch((err) => {
