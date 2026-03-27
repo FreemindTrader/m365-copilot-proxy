@@ -1,7 +1,7 @@
 import { ChatCompletionRequest } from "./schemas.js";
 import { getToken } from "./auth.js";
 import { getOrCreateAgent } from "./agent.js";
-import { formatMessages, parseToolCalls } from "./tools.js";
+import { formatMessages, parseToolCalls, getMessageContent, TOOL_CALL_FENCE, TOOL_CALL_FENCE_CLOSE } from "./tools.js";
 import { CopilotSession } from "./session.js";
 import { createLogger } from "./log.js";
 import type { z } from "zod/v4";
@@ -10,6 +10,8 @@ const log = createLogger("handler");
 
 let cachedAgentId: string | null | undefined = undefined;
 let activeSession: CopilotSession | null = null;
+// How many messages from the OpenAI messages array we've already sent to M365
+let sentMessageCount = 0;
 
 export interface HandlerOptions {
   /** Pre-resolved auth token. If not provided, getToken() is called. */
@@ -19,11 +21,45 @@ export interface HandlerOptions {
 }
 
 type ChatBody = z.infer<typeof ChatCompletionRequest>;
+type ParsedMessage = ChatBody["messages"][number];
+
+/**
+ * Format only the new messages since the last turn.
+ * No system prompt, no tool definitions, no few-shot examples —
+ * M365 already has those from the first turn.
+ */
+function formatDeltaMessages(messages: ParsedMessage[]): string {
+  const parts: string[] = [];
+  for (const m of messages) {
+    if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
+      const calls = m.tool_calls.map((tc) => {
+        const args = typeof tc.function.arguments === "string"
+          ? tc.function.arguments
+          : JSON.stringify(tc.function.arguments);
+        return `${TOOL_CALL_FENCE}\n{"name": "${tc.function.name}", "arguments": ${args}}\n${TOOL_CALL_FENCE_CLOSE}`;
+      }).join("\n");
+      const content = getMessageContent(m);
+      parts.push(`[assistant]\n${content ? content + "\n" : ""}${calls}`);
+    } else if (m.role === "tool") {
+      const name = m.name || "unknown";
+      const callId = m.tool_call_id || "?";
+      parts.push(`[tool result for ${name} (${callId})]\n${getMessageContent(m)}`);
+    } else if (m.role === "system") {
+      // Skip system messages on follow-up turns — agent has them
+    } else {
+      parts.push(`[${m.role}]\n${getMessageContent(m)}`);
+    }
+  }
+  return parts.join("\n\n");
+}
 
 /**
  * Handle a chat completion request in-process (no HTTP).
  * Uses a persistent CopilotSession so all turns share the same
  * M365 conversation (saves quota, enables server-side context).
+ *
+ * First turn: sends full prompt (system + tools + few-shot + messages).
+ * Follow-up turns: sends only new messages (tool results + user message).
  */
 export async function handleChatCompletion(
   body: ChatBody,
@@ -53,15 +89,32 @@ export async function handleChatCompletion(
     }
   }
 
-  // Create or reuse session — same conversation across all turns
+  // Create or reuse session
+  const isFirstTurn = !activeSession;
   if (!activeSession) {
     activeSession = new CopilotSession(cachedAgentId ? { agentId: cachedAgentId } : undefined);
+    sentMessageCount = 0;
   }
 
-  // Always send full message history for correctness.
-  // The session reuse saves quota by keeping the same conversationId.
-  const text = formatMessages(body.messages, body.tools, body.tool_choice);
-  log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${activeSession.turnCount}, agent=${!!cachedAgentId}`);
+  let text: string;
+  if (isFirstTurn || sentMessageCount === 0) {
+    // First turn: full prompt with system/tools/few-shot/all messages
+    text = formatMessages(body.messages, body.tools, body.tool_choice);
+    log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${activeSession.turnCount}, mode=full, agent=${!!cachedAgentId}`);
+  } else {
+    // Follow-up: only send new messages since last turn
+    const newMessages = body.messages.slice(sentMessageCount);
+    if (newMessages.length > 0) {
+      text = formatDeltaMessages(newMessages);
+      log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, new=${newMessages.length}, turn=${activeSession.turnCount}, mode=delta, agent=${!!cachedAgentId}`);
+    } else {
+      // No new messages (retry?) — send full prompt
+      text = formatMessages(body.messages, body.tools, body.tool_choice);
+      log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${activeSession.turnCount}, mode=full-retry, agent=${!!cachedAgentId}`);
+    }
+  }
+
+  sentMessageCount = body.messages.length;
   log.debug("Formatted prompt:", text.slice(0, 1000));
 
   const completionId = `chatcmpl-${crypto.randomUUID()}`;
@@ -71,11 +124,14 @@ export async function handleChatCompletion(
   try {
     copilotStream = await activeSession.chat(token, text, model);
   } catch (err: any) {
-    // Session might be stale — reset and retry once
+    // Session might be stale — reset and retry with full prompt
     log.info("Session error, resetting:", err.message);
     activeSession = new CopilotSession(cachedAgentId ? { agentId: cachedAgentId } : undefined);
+    sentMessageCount = 0;
+    const fullText = formatMessages(body.messages, body.tools, body.tool_choice);
     try {
-      copilotStream = await activeSession.chat(token, text, model);
+      copilotStream = await activeSession.chat(token, fullText, model);
+      sentMessageCount = body.messages.length;
     } catch (retryErr: any) {
       activeSession = null;
       return jsonResponse(502, { error: { message: retryErr.message, type: "upstream_error" } });
