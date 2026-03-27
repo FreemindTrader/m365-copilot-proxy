@@ -8,7 +8,7 @@
       "name": "M365 Copilot",
       "npm": "@ai-sdk/openai-compatible",
       "options": {
-        "baseURL": "http://localhost:4141/v1"
+        "baseURL": "https://m365-copilot.local/v1"
       },
       "models": {
         "m365-copilot": { "name": "M365 Copilot (Auto)" },
@@ -28,5 +28,5 @@
     }
   },
   "model": "m365/m365-copilot",
-  "default_agent": "default"
+  "default_agent": "build"
 }

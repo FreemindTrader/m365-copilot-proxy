@@ -1,9 +1,11 @@
 import type { Plugin } from "@opencode-ai/plugin";
 import {
-  createProxyServer,
   getToken,
+  getAvailableModels,
   loginAutomated,
   createLogger,
+  handleChatCompletion,
+  ChatCompletionRequest,
   formatMessages,
   formatToolDefinitions,
   parseToolCalls,
@@ -11,7 +13,6 @@ import {
   TOOL_CALL_FENCE_CLOSE,
   type ParsedToolCall,
   type ParseResult,
-  type ProxyServer,
 } from "@opencode-m365/core";
 
 const log = createLogger("opencode-plugin");
@@ -27,24 +28,72 @@ export {
   type ParseResult,
 };
 
+/**
+ * Custom fetch that intercepts OpenAI-compatible requests and handles them
+ * in-process via M365 Copilot — no HTTP proxy needed.
+ */
+async function m365Fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const url = typeof input === "string" ? new URL(input) : input instanceof URL ? input : new URL(input.url);
+  const method = init?.method || "GET";
+
+  log.info(`${method} ${url.pathname}`);
+
+  // GET /v1/models
+  if (url.pathname.endsWith("/models") && method === "GET") {
+    const created = Math.floor(Date.now() / 1000);
+    return new Response(JSON.stringify({
+      object: "list",
+      data: getAvailableModels().map((id) => ({
+        id,
+        object: "model",
+        created,
+        owned_by: "microsoft",
+      })),
+    }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  // POST /v1/chat/completions
+  if (url.pathname.endsWith("/chat/completions") && method === "POST") {
+    try {
+      const rawBody = typeof init?.body === "string"
+        ? init.body
+        : init?.body instanceof ArrayBuffer
+          ? new TextDecoder().decode(init.body)
+          : init?.body instanceof Uint8Array
+            ? new TextDecoder().decode(init.body)
+            : await new Response(init?.body).text();
+
+      const body = ChatCompletionRequest.parse(JSON.parse(rawBody));
+      return await handleChatCompletion(body);
+    } catch (err: any) {
+      log.error("Chat completion error:", err.message);
+      return new Response(JSON.stringify({
+        error: { message: err.message, type: "invalid_request_error" },
+      }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+  }
+
+  // Fallback
+  return new Response(JSON.stringify({ error: { message: "Not found" } }), {
+    status: 404,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 // --- Plugin ---
 
-let proxy: ProxyServer | null = null;
-
 export const M365Plugin: Plugin = async (_input) => {
-  log.info("Plugin init: starting proxy and acquiring token...");
-  let port: number;
+  log.info("Plugin init: acquiring token...");
   try {
     await getToken();
-    const p = await createProxyServer({ port: 0 });
-    proxy = p;
-    port = p.port;
-    log.info(`Plugin init: proxy started on port ${port}`);
+    log.info("Plugin init: auth OK");
   } catch (err: any) {
-    log.error("Plugin init failed:", err.message);
-    const p = await createProxyServer({ port: 0 });
-    proxy = p;
-    port = p.port;
+    log.error("Plugin init: auth failed:", err.message);
   }
 
   return {
@@ -53,7 +102,9 @@ export const M365Plugin: Plugin = async (_input) => {
 
       async loader(_auth, _provider) {
         return {
-          baseURL: `http://localhost:${port}/v1`,
+          baseURL: "https://m365-copilot.local/v1",
+          apiKey: "",
+          fetch: m365Fetch,
         };
       },
 
@@ -93,7 +144,6 @@ export const M365Plugin: Plugin = async (_input) => {
                 inputs.mfaSecret,
               );
 
-              // Store credentials in secrets.json for future auto-refresh
               const { writeFileSync, mkdirSync } = await import("node:fs");
               const { join } = await import("node:path");
               const { homedir } = await import("node:os");

@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "pnpm --filter @opencode-m365/proxy dev",
     "build": "pnpm -r build",
-    "test": "pnpm build && opencode",
+    "test": "pnpm build && M365_DEBUG=1 opencode",
     "test:unit": "pnpm build && npx vitest run"
   },
   "packageManager": "pnpm@10.32.1",

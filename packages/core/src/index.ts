@@ -47,4 +47,9 @@ export {
   type ProxyServer,
 } from "./proxy.js";
 
+export {
+  handleChatCompletion,
+  type HandlerOptions,
+} from "./handler.js";
+
 export { createLogger, LOG_PATH } from "./log.js";

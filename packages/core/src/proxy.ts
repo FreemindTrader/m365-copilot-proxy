@@ -151,7 +151,38 @@ export async function createProxyServer(options: ProxyOptions = {}): Promise<Pro
           const parsed = parseToolCalls(fullText);
           log.info(`Parse result: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
 
+          // Handle "reply" tool calls — convert to plain text
           if (parsed.hasToolCalls) {
+            const replyCall = parsed.toolCalls.find(tc => tc.function.name === "reply");
+            const realToolCalls = parsed.toolCalls.filter(tc => tc.function.name !== "reply");
+
+            if (replyCall && realToolCalls.length === 0) {
+              let replyText: string;
+              try {
+                const args = JSON.parse(replyCall.function.arguments);
+                replyText = args.text || args.message || args.content || fullText;
+              } catch {
+                replyText = fullText;
+              }
+              log.info("Reply tool detected, converting to text response");
+              if (body.stream) {
+                writeStreamedText(res, completionId, created, model, replyText);
+              } else {
+                jsonRes(200, {
+                  id: completionId, object: "chat.completion", created, model,
+                  choices: [{ index: 0, message: { role: "assistant", content: replyText }, finish_reason: "stop" }],
+                  usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+                });
+              }
+              return;
+            }
+
+            if (realToolCalls.length > 0) {
+              parsed.toolCalls = realToolCalls;
+            }
+          }
+
+          if (parsed.hasToolCalls && parsed.toolCalls.length > 0) {
             if (body.stream) {
               res.writeHead(200, {
                 "Content-Type": "text/event-stream",
