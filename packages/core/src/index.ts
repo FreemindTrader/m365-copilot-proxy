@@ -52,4 +52,9 @@ export {
   type HandlerOptions,
 } from "./handler.js";
 
+export {
+  CopilotSession,
+  type CopilotSessionOptions,
+} from "./session.js";
+
 export { createLogger, LOG_PATH } from "./log.js";

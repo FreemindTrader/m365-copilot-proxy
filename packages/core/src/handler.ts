@@ -1,14 +1,15 @@
-import { copilotChat } from "./copilot.js";
 import { ChatCompletionRequest } from "./schemas.js";
 import { getToken } from "./auth.js";
 import { getOrCreateAgent } from "./agent.js";
 import { formatMessages, parseToolCalls } from "./tools.js";
+import { CopilotSession } from "./session.js";
 import { createLogger } from "./log.js";
 import type { z } from "zod/v4";
 
 const log = createLogger("handler");
 
 let cachedAgentId: string | null | undefined = undefined;
+let activeSession: CopilotSession | null = null;
 
 export interface HandlerOptions {
   /** Pre-resolved auth token. If not provided, getToken() is called. */
@@ -21,7 +22,8 @@ type ChatBody = z.infer<typeof ChatCompletionRequest>;
 
 /**
  * Handle a chat completion request in-process (no HTTP).
- * Takes a parsed OpenAI-format request body and returns a Response.
+ * Uses a persistent CopilotSession so all turns share the same
+ * M365 conversation (saves quota, enables server-side context).
  */
 export async function handleChatCompletion(
   body: ChatBody,
@@ -51,19 +53,33 @@ export async function handleChatCompletion(
     }
   }
 
-  const text = formatMessages(body.messages, body.tools, body.tool_choice, {
-    agentMode: !!cachedAgentId,
-  });
-  log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, tools=${body.tools?.length ?? 0}, agent=${!!cachedAgentId}`);
+  // Create or reuse session — same conversation across all turns
+  if (!activeSession) {
+    activeSession = new CopilotSession(cachedAgentId ? { agentId: cachedAgentId } : undefined);
+  }
+
+  // Always send full message history for correctness.
+  // The session reuse saves quota by keeping the same conversationId.
+  const text = formatMessages(body.messages, body.tools, body.tool_choice);
+  log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${activeSession.turnCount}, agent=${!!cachedAgentId}`);
   log.debug("Formatted prompt:", text.slice(0, 1000));
+
   const completionId = `chatcmpl-${crypto.randomUUID()}`;
   const created = Math.floor(Date.now() / 1000);
 
   let copilotStream;
   try {
-    copilotStream = await copilotChat(token, text, model, cachedAgentId ? { agentId: cachedAgentId } : undefined);
+    copilotStream = await activeSession.chat(token, text, model);
   } catch (err: any) {
-    return jsonResponse(502, { error: { message: err.message, type: "upstream_error" } });
+    // Session might be stale — reset and retry once
+    log.info("Session error, resetting:", err.message);
+    activeSession = new CopilotSession(cachedAgentId ? { agentId: cachedAgentId } : undefined);
+    try {
+      copilotStream = await activeSession.chat(token, text, model);
+    } catch (retryErr: any) {
+      activeSession = null;
+      return jsonResponse(502, { error: { message: retryErr.message, type: "upstream_error" } });
+    }
   }
 
   // When tools are present, buffer full response to detect tool calls
