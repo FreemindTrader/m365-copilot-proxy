@@ -104,10 +104,19 @@ export function decodeJwt(token: string) {
 export interface CopilotStream {
   [Symbol.asyncIterator](): AsyncIterator<string>;
   fullText: string;
+  /** True if the server returned content (deltas or full text) */
+  hasContent: boolean;
+  /** Throttle info if provided by M365 */
+  throttle: { current: number; max: number } | null;
 }
 
-export function copilotChat(token: string, text: string, model: string = "m365-copilot"): Promise<CopilotStream> {
-  log.info(`Chat request: model=${model}, text=${JSON.stringify(text.slice(0, 200))}`);
+export interface CopilotChatOptions {
+  /** Agent ID for custom Copilot Studio agents (e.g. "T_xxx.yyy.gpt.default") */
+  agentId?: string;
+}
+
+export function copilotChat(token: string, text: string, model: string = "m365-copilot", options?: CopilotChatOptions): Promise<CopilotStream> {
+  log.info(`Chat request: model=${model}, agent=${options?.agentId ?? "none"}, text=${JSON.stringify(text.slice(0, 200))}`);
   const claims = decodeJwt(token);
   const sessionId = crypto.randomUUID();
   const conversationId = crypto.randomUUID();
@@ -131,6 +140,8 @@ export function copilotChat(token: string, text: string, model: string = "m365-c
 
   return new Promise((resolve, reject) => {
     let fullText = "";
+    let receivedContent = false;
+    let throttleInfo: { current: number; max: number } | null = null;
     let onDelta: ((text: string) => void) | null = null;
     let onDone: (() => void) | null = null;
     let onError: ((err: Error) => void) | null = null;
@@ -138,6 +149,12 @@ export function copilotChat(token: string, text: string, model: string = "m365-c
     const stream: CopilotStream = {
       get fullText() {
         return fullText;
+      },
+      get hasContent() {
+        return receivedContent;
+      },
+      get throttle() {
+        return throttleInfo;
       },
 
       [Symbol.asyncIterator]() {
@@ -262,6 +279,8 @@ export function copilotChat(token: string, text: string, model: string = "m365-c
     });
 
     function sendChat() {
+      const agentId = options?.agentId;
+
       const chatMsg = {
         arguments: [
           {
@@ -290,7 +309,9 @@ export function copilotChat(token: string, text: string, model: string = "m365-c
               "ReferencesListComplete",
             ],
             sliceIds: [] as string[],
-            threadLevelGptId: {},
+            threadLevelGptId: agentId
+              ? { id: agentId, source: "MOS3" }
+              : {},
             traceId: sessionId,
             isStartOfSession: true,
             clientInfo: {
@@ -321,7 +342,21 @@ export function copilotChat(token: string, text: string, model: string = "m365-c
               adaptiveCards: [] as any[],
               clientPreferences: {},
             },
-            plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }],
+            ...(agentId
+              ? {
+                  gpts: [{
+                    id: agentId,
+                    source: "MOS3",
+                    version: "1.0.0",
+                    clientOverrides: {
+                      capabilities: [],
+                      "deepResearchModels@odata.type": "Collection(String)",
+                    },
+                  }],
+                }
+              : {
+                  plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }],
+                }),
             isSbsSupported: true,
             tone: getToneForModel(model),
             renderReferencesBehindEOS: true,
@@ -396,6 +431,7 @@ export function copilotChat(token: string, text: string, model: string = "m365-c
           // Try delta update
           const delta = DeltaUpdate.safeParse(arg);
           if (delta.success) {
+            receivedContent = true;
             onDelta?.(delta.data.writeAtCursor);
             continue;
           }
@@ -405,6 +441,7 @@ export function copilotChat(token: string, text: string, model: string = "m365-c
           if (msgUpdate.success) {
             for (const m of msgUpdate.data.messages) {
               if (m.author === "bot" && m.text && !m.messageType) {
+                receivedContent = true;
                 fullText = m.text;
               }
             }
@@ -415,6 +452,7 @@ export function copilotChat(token: string, text: string, model: string = "m365-c
           const throttle = ThrottlingUpdate.safeParse(arg);
           if (throttle.success) {
             const t = throttle.data.throttling;
+            throttleInfo = { current: t.numUserMessagesInConversation, max: t.maxNumUserMessagesInConversation };
             log.info(`Throttle: ${t.numUserMessagesInConversation}/${t.maxNumUserMessagesInConversation} messages`);
           }
         }

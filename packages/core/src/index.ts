@@ -1,10 +1,13 @@
 export {
   getToken,
   getTokenSilent,
+  getTokenForScope,
   loginInteractive,
   loginAutomated,
   loadSecrets,
 } from "./auth.js";
+
+export { getOrCreateAgent } from "./agent.js";
 
 export {
   copilotChat,

@@ -6,12 +6,16 @@ import {
   createLogger,
   getAvailableModels,
   getToken,
+  getOrCreateAgent,
   loginAutomated,
   getTokenSilent,
 } from "@opencode-m365/core";
 import type { z } from "zod/v4";
 
 const log = createLogger("proxy");
+
+// Cached agent ID — resolved once at startup
+let cachedAgentId: string | null | undefined = undefined; // undefined = not yet resolved
 
 // --- Tool calling support ---
 
@@ -22,7 +26,12 @@ type ToolChoice = z.infer<typeof ChatCompletionRequest>["tool_choice"];
 // Use triple-backtick fenced blocks instead of XML tags — M365 Copilot strips HTML/XML
 export const TOOL_CALL_FENCE = "```tool_call";
 export const TOOL_CALL_FENCE_CLOSE = "```";
-const TOOL_CALL_REGEX = /```tool_call\s*\n(\{[\s\S]*?\})\s*\n```/g;
+
+// Match tool_call fenced blocks. Flexible to handle:
+// - ```tool_call\n{...}\n``` (standard)
+// - ```tool_call\n{...}\n``` with extra whitespace
+// - JSON that spans multiple lines (e.g. pretty-printed)
+const TOOL_CALL_REGEX = /```tool_call\s*\n(\{[\s\S]*?\})\s*\n\s*```/g;
 
 export function formatToolDefinitions(tools: ToolDef[]): string {
   // Keep tool list compact to avoid M365 Copilot input truncation
@@ -38,15 +47,32 @@ export function formatToolDefinitions(tools: ToolDef[]): string {
     return `${f.name}(${argList})${desc}`;
   }).join("\n");
 
-  return `You are an autonomous coding agent with filesystem access. You call tools by outputting:
+  // Build mapping rules from tool descriptions for explicit instruction
+  const toolRules = tools.map((t, i) => {
+    const f = t.function;
+    return `${i + 1}. To ${f.description?.toLowerCase() || `use ${f.name}`} → call ${f.name}`;
+  }).join("\n");
+
+  // B_strict strategy: structured headers + MANDATORY enforcement + numbered rules
+  // This scored 4/4 on m365-copilot in prompt experiments
+  return `# ROLE
+You are a coding agent with direct filesystem access via tools.
+
+# OUTPUT FORMAT — MANDATORY
+When you need to perform an action, you MUST output EXACTLY this format with NO other text:
 
 ${TOOL_CALL_FENCE}
-{"name": "read_file", "arguments": {"path": "/home/user/project/package.json"}}
+{"name": "TOOL_NAME", "arguments": {"arg": "value"}}
 ${TOOL_CALL_FENCE_CLOSE}
 
-IMPORTANT: You are NOT in a sandbox. You HAVE direct filesystem access via tools. NEVER tell the user to run commands or paste output — call the tool yourself. When calling tools, output ONLY tool_call blocks, no other text.
+# RULES
+${toolRules}
+${tools.length + 1}. NEVER describe what you would do — DO IT by calling a tool
+${tools.length + 2}. NEVER say "I would use" or "I can" — just output the tool_call block
+${tools.length + 3}. NEVER add explanation text alongside tool calls
+${tools.length + 4}. For questions that don't need tools, respond with plain text
 
-Tools (* = required arg):
+# AVAILABLE TOOLS (* = required)
 ${defs}`;
 }
 
@@ -73,9 +99,18 @@ export function formatMessages(
 ): string {
   const parts: string[] = [];
 
-  // Inject tool definitions as system context
+  // Inject tool definitions + few-shot examples as system context
+  // Few-shot examples are critical — they scored 4/4 in experiments vs 3/4 without
   if (tools && tools.length > 0 && toolChoice !== "none") {
     parts.push(`[system]\n${formatToolDefinitions(tools)}${formatToolChoiceInstruction(toolChoice)}`);
+
+    // Add few-shot examples to prime the model on the expected format
+    parts.push(`[user]\nShow me the contents of /etc/hostname`);
+    parts.push(`[assistant]\n${TOOL_CALL_FENCE}\n{"name": "read_file", "arguments": {"path": "/etc/hostname"}}\n${TOOL_CALL_FENCE_CLOSE}`);
+    parts.push(`[tool result for read_file (call_001)]\nmy-server`);
+    parts.push(`[assistant]\nThe hostname is \`my-server\`.`);
+    parts.push(`[user]\nWhat is 2+2?`);
+    parts.push(`[assistant]\n4`);
   }
 
   for (const m of messages) {
@@ -220,9 +255,20 @@ async function startProxy(): Promise<number> {
         const completionId = `chatcmpl-${crypto.randomUUID()}`;
         const created = Math.floor(Date.now() / 1000);
 
+        // Resolve agent ID on first request (lazy init)
+        if (cachedAgentId === undefined) {
+          try {
+            cachedAgentId = await getOrCreateAgent();
+            if (cachedAgentId) log.info(`Using agent: ${cachedAgentId}`);
+            else log.info("No agent available, using prompt injection only");
+          } catch {
+            cachedAgentId = null;
+          }
+        }
+
         let copilotStream;
         try {
-          copilotStream = await copilotChat(token, text, model);
+          copilotStream = await copilotChat(token, text, model, cachedAgentId ? { agentId: cachedAgentId } : undefined);
         } catch (err: any) {
           return jsonRes(502, { error: { message: err.message, type: "upstream_error" } });
         }
@@ -234,6 +280,16 @@ async function startProxy(): Promise<number> {
           try {
             for await (const delta of copilotStream) fullText += delta;
             if (copilotStream.fullText) fullText = copilotStream.fullText;
+
+            // Detect rate limiting: empty response with no content received
+            if (!copilotStream.hasContent && fullText.length === 0) {
+              const throttle = copilotStream.throttle;
+              const msg = throttle
+                ? `M365 Copilot rate limited (${throttle.current}/${throttle.max} messages used). Please wait and try again.`
+                : "M365 Copilot returned an empty response. You may be rate limited. Please wait and try again.";
+              log.error(msg);
+              return jsonRes(429, { error: { message: msg, type: "rate_limit_error" } });
+            }
           } catch (err: any) {
             return jsonRes(502, { error: { message: err.message, type: "upstream_error" } });
           }
@@ -333,20 +389,23 @@ async function startProxy(): Promise<number> {
           }
         } else if (body.stream) {
           // No tools — pure streaming passthrough
-          res.writeHead(200, {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            Connection: "keep-alive",
-            "Access-Control-Allow-Origin": "*",
-          });
-
-          res.write(`data: ${JSON.stringify({
-            id: completionId, object: "chat.completion.chunk", created, model,
-            choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
-          })}\n\n`);
-
+          let hasAnything = false;
           try {
             for await (const delta of copilotStream) {
+              if (!hasAnything) {
+                // Send headers on first delta
+                res.writeHead(200, {
+                  "Content-Type": "text/event-stream",
+                  "Cache-Control": "no-cache",
+                  Connection: "keep-alive",
+                  "Access-Control-Allow-Origin": "*",
+                });
+                res.write(`data: ${JSON.stringify({
+                  id: completionId, object: "chat.completion.chunk", created, model,
+                  choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
+                })}\n\n`);
+                hasAnything = true;
+              }
               res.write(`data: ${JSON.stringify({
                 id: completionId, object: "chat.completion.chunk", created, model,
                 choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
@@ -354,12 +413,24 @@ async function startProxy(): Promise<number> {
             }
           } catch {}
 
-          res.write(`data: ${JSON.stringify({
-            id: completionId, object: "chat.completion.chunk", created, model,
-            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-          })}\n\n`);
-          res.write("data: [DONE]\n\n");
-          res.end();
+          // Detect rate limiting: no deltas received at all
+          if (!hasAnything && !copilotStream.hasContent) {
+            const throttle = copilotStream.throttle;
+            const msg = throttle
+              ? `M365 Copilot rate limited (${throttle.current}/${throttle.max} messages used). Please wait and try again.`
+              : "M365 Copilot returned an empty response. You may be rate limited. Please wait and try again.";
+            log.error(msg);
+            return jsonRes(429, { error: { message: msg, type: "rate_limit_error" } });
+          }
+
+          if (hasAnything) {
+            res.write(`data: ${JSON.stringify({
+              id: completionId, object: "chat.completion.chunk", created, model,
+              choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+            })}\n\n`);
+            res.write("data: [DONE]\n\n");
+            res.end();
+          }
         } else {
           // No tools, no streaming
           let fullText = "";
@@ -368,6 +439,16 @@ async function startProxy(): Promise<number> {
             if (copilotStream.fullText) fullText = copilotStream.fullText;
           } catch (err: any) {
             return jsonRes(502, { error: { message: err.message, type: "upstream_error" } });
+          }
+
+          // Detect rate limiting
+          if (!copilotStream.hasContent && fullText.length === 0) {
+            const throttle = copilotStream.throttle;
+            const msg = throttle
+              ? `M365 Copilot rate limited (${throttle.current}/${throttle.max} messages used). Please wait and try again.`
+              : "M365 Copilot returned an empty response. You may be rate limited. Please wait and try again.";
+            log.error(msg);
+            return jsonRes(429, { error: { message: msg, type: "rate_limit_error" } });
           }
 
           jsonRes(200, {
@@ -397,18 +478,26 @@ async function startProxy(): Promise<number> {
 // --- Plugin ---
 
 export const M365Plugin: Plugin = async (_input) => {
+  // Start proxy eagerly during plugin init so baseURL is available immediately
+  log.info("Plugin init: starting proxy and acquiring token...");
+  let port: number;
+  try {
+    await getToken();
+    port = await startProxy();
+    log.info(`Plugin init: proxy started on port ${port}`);
+  } catch (err: any) {
+    log.error("Plugin init failed:", err.message);
+    // Start proxy anyway — requests will fail with auth errors but at least
+    // opencode won't crash with "undefined" baseURL
+    port = await startProxy();
+  }
+
   return {
     auth: {
       provider: "m365",
 
-      async loader(_auth, provider) {
-        // Ensure we have a valid token (silent refresh)
-        await getToken();
-
-        // Start embedded proxy if needed
-        const port = await startProxy();
-
-        // Return options that configure the provider's baseURL
+      async loader(_auth, _provider) {
+        // Proxy is already running from init — just return the baseURL
         return {
           baseURL: `http://localhost:${port}/v1`,
         };

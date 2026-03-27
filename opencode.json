@@ -7,6 +7,9 @@
     "m365": {
       "name": "M365 Copilot",
       "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://localhost:0/v1"
+      },
       "models": {
         "m365-copilot": { "name": "M365 Copilot (Auto)" },
         "auto": { "name": "M365 Auto" },

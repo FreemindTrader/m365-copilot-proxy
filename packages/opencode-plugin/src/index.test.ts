@@ -122,12 +122,13 @@ describe("formatToolDefinitions", () => {
     expect(result).toContain("list_directory(");
     expect(result).toContain("bash(");
     expect(result).toContain("tool_call");
-    expect(result).toContain("NOT in a sandbox");
+    expect(result).toContain("OUTPUT FORMAT — MANDATORY");
   });
 
-  it("includes example with real tool name", () => {
+  it("includes tool-to-action mapping rules", () => {
     const result = formatToolDefinitions(SAMPLE_TOOLS);
-    expect(result).toContain('"name": "read_file"');
+    expect(result).toContain("→ call read_file");
+    expect(result).toContain("→ call bash");
   });
 });
 

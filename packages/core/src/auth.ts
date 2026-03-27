@@ -212,6 +212,23 @@ export function loadSecrets(): {
   return null;
 }
 
+export async function getTokenForScope(scopes: string[]): Promise<string | null> {
+  const app = getApp();
+  const accounts = await app.getTokenCache().getAllAccounts();
+  if (accounts.length === 0) return null;
+
+  try {
+    const result = await app.acquireTokenSilent({
+      scopes,
+      account: accounts[0],
+    });
+    saveCache(app);
+    return result.accessToken;
+  } catch {
+    return null;
+  }
+}
+
 export async function getToken(): Promise<string> {
   const silent = await getTokenSilent();
   if (silent) {
