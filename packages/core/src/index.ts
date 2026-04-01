@@ -18,12 +18,14 @@ export {
 } from "./copilot.js";
 
 export {
-  ChatCompletionRequest,
-  ChatMessage,
-  JwtClaims,
-  ToolCall,
-  ToolDefinition,
-} from "./schemas.js";
+  CopilotSession,
+  type CopilotSessionOptions,
+} from "./session.js";
+
+export {
+  ModelSession,
+  type ModelSessionOptions,
+} from "./model.js";
 
 export {
   formatMessages,
@@ -31,32 +33,12 @@ export {
   formatToolChoiceInstruction,
   getMessageContent,
   parseToolCalls,
-  TOOL_CALL_FENCE,
-  TOOL_CALL_FENCE_CLOSE,
-  type ParsedMessage,
+  type Message,
   type ToolDef,
+  type ToolFunction,
   type ToolChoice,
   type ParsedToolCall,
   type ParseResult,
-  type FormatOptions,
 } from "./tools.js";
-
-export {
-  createProxyServer,
-  type ProxyOptions,
-  type ProxyServer,
-} from "./proxy.js";
-
-export {
-  handleChatCompletion,
-  HandlerContext,
-  createHandlerContext,
-  type HandlerOptions,
-} from "./handler.js";
-
-export {
-  CopilotSession,
-  type CopilotSessionOptions,
-} from "./session.js";
 
 export { createLogger, LOG_PATH } from "./log.js";

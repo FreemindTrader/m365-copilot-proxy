@@ -20,7 +20,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@opencode-m365/core": "workspace:*"
+    "@hono/node-server": "^1.19.12",
+    "@opencode-m365/core": "workspace:*",
+    "@opencode-m365/proxy-lib": "workspace:*"
   },
   "publishConfig": {
     "access": "public"

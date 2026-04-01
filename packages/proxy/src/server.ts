@@ -1,4 +1,6 @@
-import { createProxyServer, getToken } from "@opencode-m365/core";
+import { serve } from "@hono/node-server";
+import { getToken } from "@opencode-m365/core";
+import { createApp } from "@opencode-m365/proxy-lib";
 
 const PORT = parseInt(process.argv[2] || "4141", 10);
 
@@ -10,9 +12,11 @@ try {
   process.exit(1);
 }
 
-const proxy = await createProxyServer({ port: PORT });
+const app = createApp();
 
-console.log(`M365 Copilot proxy listening on http://localhost:${proxy.port}`);
-console.log(`  POST /v1/chat/completions  (with tool calling + agent mode)`);
-console.log(`  GET  /v1/models`);
-console.log(`  GET  /health`);
+serve({ fetch: app.fetch, port: PORT }, (info) => {
+  console.log(`M365 Copilot proxy listening on http://localhost:${info.port}`);
+  console.log(`  POST /v1/chat/completions  (with tool calling + agent mode)`);
+  console.log(`  GET  /v1/models`);
+  console.log(`  GET  /health`);
+});

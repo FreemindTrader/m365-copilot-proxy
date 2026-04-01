@@ -1,9 +1,12 @@
+import {
+  ModelSession,
+  type ModelSessionOptions,
+  createLogger,
+  formatMessages,
+  parseToolCalls,
+  getMessageContent,
+} from "@opencode-m365/core";
 import { ChatCompletionRequest } from "./schemas.js";
-import { getToken } from "./auth.js";
-import { getOrCreateAgent } from "./agent.js";
-import { formatMessages, parseToolCalls, getMessageContent, TOOL_CALL_FENCE, TOOL_CALL_FENCE_CLOSE } from "./tools.js";
-import { CopilotSession } from "./session.js";
-import { createLogger } from "./log.js";
 import type { z } from "zod/v4";
 
 const log = createLogger("handler");
@@ -11,56 +14,76 @@ const log = createLogger("handler");
 type ChatBody = z.infer<typeof ChatCompletionRequest>;
 type ParsedMessage = ChatBody["messages"][number];
 
-// --- HandlerContext: holds session state across requests ---
+// --- Per-conversation state ---
 
-export class HandlerContext {
-  activeSession: CopilotSession | null = null;
-  sentMessageCount = 0;
-  cachedAgentId: string | null | undefined = undefined;
-  /** Hash of the first user message — used to detect new conversations */
-  private firstUserMessageHash: string | null = null;
+interface ConversationState {
+  session: ModelSession;
+  sentMessageCount: number;
+  lastAccessedAt: number;
+}
+
+// --- Session pool: maps conversation fingerprint → M365 session ---
+
+const MAX_IDLE_MS = 30 * 60 * 1000; // evict after 30 min idle
+
+export class SessionPool {
+  private conversations = new Map<string, ConversationState>();
+  private sessionOptions: ModelSessionOptions;
+
+  constructor(sessionOptions: ModelSessionOptions = {}) {
+    this.sessionOptions = sessionOptions;
+  }
 
   /**
-   * Check if this request is a new conversation or a continuation.
-   * New conversation if:
-   *   - messages array is shorter than what we've sent (user started fresh)
-   *   - first user message changed (different conversation)
+   * Resolve the conversation state for an incoming request.
+   * Fingerprint is the hash of the first user message — same first user message = same conversation.
    */
-  shouldResetSession(messages: ParsedMessage[]): boolean {
-    if (!this.activeSession) return false; // no session to reset
+  resolve(messages: ParsedMessage[]): ConversationState {
+    this.evictStale();
 
-    // Messages shrunk — definitely a new conversation
-    if (messages.length < this.sentMessageCount) {
-      log.info(`Conversation reset: messages shrunk (${messages.length} < ${this.sentMessageCount})`);
-      return true;
+    const fingerprint = this.fingerprint(messages);
+    const existing = this.conversations.get(fingerprint);
+
+    if (existing) {
+      // Messages shrunk means client restarted this conversation — reset M365 session
+      if (messages.length < existing.sentMessageCount) {
+        log.info(`Conversation ${fingerprint}: messages shrunk (${messages.length} < ${existing.sentMessageCount}), resetting`);
+        existing.session.reset();
+        existing.sentMessageCount = 0;
+      }
+      existing.lastAccessedAt = Date.now();
+      return existing;
     }
 
-    // Check if the first user message changed
+    // New conversation
+    log.info(`New conversation ${fingerprint}, ${this.conversations.size} active`);
+    const state: ConversationState = {
+      session: new ModelSession(this.sessionOptions),
+      sentMessageCount: 0,
+      lastAccessedAt: Date.now(),
+    };
+    this.conversations.set(fingerprint, state);
+    return state;
+  }
+
+  private fingerprint(messages: ParsedMessage[]): string {
     const firstUser = messages.find(m => m.role === "user");
-    const hash = firstUser ? simpleHash(getMessageContent(firstUser)) : null;
-    if (this.firstUserMessageHash !== null && hash !== this.firstUserMessageHash) {
-      log.info("Conversation reset: first user message changed");
-      return true;
-    }
-
-    return false;
+    const text = firstUser ? getMessageContent(firstUser) : "";
+    return simpleHash(text);
   }
 
-  /** Update tracking after a successful request */
-  trackMessages(messages: ParsedMessage[]) {
-    this.sentMessageCount = messages.length;
-    if (this.firstUserMessageHash === null) {
-      const firstUser = messages.find(m => m.role === "user");
-      this.firstUserMessageHash = firstUser ? simpleHash(getMessageContent(firstUser)) : null;
+  private evictStale() {
+    const now = Date.now();
+    for (const [key, state] of this.conversations) {
+      if (now - state.lastAccessedAt > MAX_IDLE_MS) {
+        log.info(`Evicting idle conversation ${key}`);
+        this.conversations.delete(key);
+      }
     }
   }
 
-  /** Reset session state for a new conversation */
-  reset() {
-    this.activeSession = null;
-    this.sentMessageCount = 0;
-    this.firstUserMessageHash = null;
-    // Keep cachedAgentId — agent persists across conversations
+  get size(): number {
+    return this.conversations.size;
   }
 }
 
@@ -72,21 +95,8 @@ function simpleHash(str: string): string {
   return String(hash);
 }
 
-/** Create a new handler context for independent session tracking */
-export function createHandlerContext(): HandlerContext {
-  return new HandlerContext();
-}
+// --- Delta message formatting ---
 
-// Default module-level context (used by opencode-plugin for backward compat)
-const defaultContext = new HandlerContext();
-
-// --- Message formatting ---
-
-/**
- * Format only the new messages since the last turn.
- * No system prompt, no tool definitions, no few-shot examples —
- * M365 already has those from the first turn.
- */
 function formatDeltaMessages(messages: ParsedMessage[]): string {
   const parts: string[] = [];
   for (const m of messages) {
@@ -95,18 +105,18 @@ function formatDeltaMessages(messages: ParsedMessage[]): string {
         const args = typeof tc.function.arguments === "string"
           ? tc.function.arguments
           : JSON.stringify(tc.function.arguments);
-        return `${TOOL_CALL_FENCE}\n{"name": "${tc.function.name}", "arguments": ${args}}\n${TOOL_CALL_FENCE_CLOSE}`;
+        return `{"tool": "${tc.function.name}", "arguments": ${args}}`;
       }).join("\n");
       const content = getMessageContent(m);
-      parts.push(`[assistant]\n${content ? content + "\n" : ""}${calls}`);
+      parts.push(`<assistant>${content ? "\n" + content : ""}\n${calls}\n</assistant>`);
     } else if (m.role === "tool") {
       const name = m.name || "unknown";
       const callId = m.tool_call_id || "?";
-      parts.push(`[tool result for ${name} (${callId})]\n${getMessageContent(m)}`);
+      parts.push(`<tool_response name="${name}" call_id="${callId}">\n${getMessageContent(m)}\n</tool_response>`);
     } else if (m.role === "system") {
       // Skip system messages on follow-up turns
     } else {
-      parts.push(`[${m.role}]\n${getMessageContent(m)}`);
+      parts.push(`<${m.role}>\n${getMessageContent(m)}\n</${m.role}>`);
     }
   }
   return parts.join("\n\n");
@@ -114,81 +124,41 @@ function formatDeltaMessages(messages: ParsedMessage[]): string {
 
 // --- Main handler ---
 
-export interface HandlerOptions {
-  /** Pre-resolved auth token. If not provided, getToken() is called. */
-  getToken?: () => Promise<string>;
-  /** Whether to attempt agent resolution. Default: true. */
-  useAgent?: boolean;
-  /** Session context. Default: module-level shared context. */
-  context?: HandlerContext;
-}
-
 /**
- * Handle a chat completion request in-process (no HTTP).
- * Uses a persistent CopilotSession so all turns share the same
- * M365 conversation (saves quota, enables server-side context).
- *
- * First turn: sends full prompt (system + tools + few-shot + messages).
- * Follow-up turns: sends only new messages (tool results + user message).
- * New conversation detected: resets session automatically.
+ * Handle a chat completion request, returning an OpenAI-compatible Response.
+ * The SessionPool routes each conversation to its own ModelSession.
  */
 export async function handleChatCompletion(
   body: ChatBody,
-  options: HandlerOptions = {},
+  pool: SessionPool,
 ): Promise<Response> {
-  const resolveToken = options.getToken ?? getToken;
-  const useAgent = options.useAgent !== false;
-  const ctx = options.context ?? defaultContext;
-
-  let token: string;
-  try {
-    token = await resolveToken();
-  } catch (err: any) {
-    return jsonResponse(401, { error: { message: err.message, type: "auth_error" } });
-  }
-
+  const conv = pool.resolve(body.messages);
+  const { session } = conv;
   const hasTools = body.tools && body.tools.length > 0 && body.tool_choice !== "none";
   const model = body.model;
 
-  // Resolve agent ID lazily (shared across conversations)
-  if (useAgent && ctx.cachedAgentId === undefined) {
-    try {
-      ctx.cachedAgentId = await getOrCreateAgent();
-      if (ctx.cachedAgentId) log.info(`Using agent: ${ctx.cachedAgentId}`);
-      else log.info("No agent available, using prompt injection only");
-    } catch {
-      ctx.cachedAgentId = null;
-    }
-  }
-
-  // Detect new conversation and reset if needed
-  if (ctx.shouldResetSession(body.messages)) {
-    ctx.reset();
-  }
-
-  // Create session if needed
-  const isFirstTurn = !ctx.activeSession;
-  if (!ctx.activeSession) {
-    ctx.activeSession = new CopilotSession(ctx.cachedAgentId ? { agentId: ctx.cachedAgentId } : undefined);
-  }
-
-  // Format message: full prompt on first turn, delta on follow-ups
+  // Format message: full prompt on first turn, delta on follow-ups.
+  // M365 is stateful — it remembers everything from prior turns,
+  // so we only need to send new messages after the first turn.
+  const isFirstTurn = session.turnCount === 0;
+  const convId = session.conversationId;
   let text: string;
-  if (isFirstTurn || ctx.sentMessageCount === 0) {
-    text = formatMessages(body.messages, body.tools, body.tool_choice);
-    log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${ctx.activeSession.turnCount}, mode=full, agent=${!!ctx.cachedAgentId}`);
+  if (isFirstTurn || conv.sentMessageCount === 0) {
+    text = formatMessages(body.messages, body.tools, body.tool_choice, convId);
+    log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=full, cid=${convId}`);
   } else {
-    const newMessages = body.messages.slice(ctx.sentMessageCount);
+    const newMessages = body.messages.slice(conv.sentMessageCount);
     if (newMessages.length > 0) {
       text = formatDeltaMessages(newMessages);
-      log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, new=${newMessages.length}, turn=${ctx.activeSession.turnCount}, mode=delta, agent=${!!ctx.cachedAgentId}`);
+      log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, new=${newMessages.length}, turn=${session.turnCount}, mode=delta, cid=${convId}`);
     } else {
-      text = formatMessages(body.messages, body.tools, body.tool_choice);
-      log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${ctx.activeSession.turnCount}, mode=full-retry, agent=${!!ctx.cachedAgentId}`);
+      // Same message count = retry. M365 already has the context, just nudge it.
+      text = "Please continue.";
+      log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=retry, cid=${convId}`);
     }
   }
 
-  ctx.trackMessages(body.messages);
+  conv.sentMessageCount = body.messages.length;
   log.debug("Formatted prompt:", text.slice(0, 1000));
 
   const completionId = `chatcmpl-${crypto.randomUUID()}`;
@@ -196,20 +166,9 @@ export async function handleChatCompletion(
 
   let copilotStream;
   try {
-    copilotStream = await ctx.activeSession.chat(token, text, model);
+    copilotStream = await session.run(text, model);
   } catch (err: any) {
-    // Session might be stale — reset and retry with full prompt
-    log.info("Session error, resetting:", err.message);
-    ctx.reset();
-    ctx.activeSession = new CopilotSession(ctx.cachedAgentId ? { agentId: ctx.cachedAgentId } : undefined);
-    const fullText = formatMessages(body.messages, body.tools, body.tool_choice);
-    try {
-      copilotStream = await ctx.activeSession.chat(token, fullText, model);
-      ctx.trackMessages(body.messages);
-    } catch (retryErr: any) {
-      ctx.reset();
-      return jsonResponse(502, { error: { message: retryErr.message, type: "upstream_error" } });
-    }
+    return jsonResponse(502, { error: { message: err.message, type: "upstream_error" } });
   }
 
   // When tools are present, buffer full response to detect tool calls

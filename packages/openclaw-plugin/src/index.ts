@@ -1,16 +1,10 @@
-import {
-  createProxyServer,
-  getToken,
-  getAvailableModels,
-  createLogger,
-  type ProxyServer,
-  type ProxyOptions,
-} from "@opencode-m365/core";
+import { getToken, getAvailableModels, createLogger } from "@opencode-m365/core";
+import { createApp } from "@opencode-m365/proxy-lib";
+import { serve } from "@hono/node-server";
 
 const log = createLogger("openclaw-plugin");
 
-// Re-export core utilities that consumers may need
-export { getAvailableModels, createProxyServer, type ProxyServer, type ProxyOptions };
+export { getAvailableModels };
 
 // --- OpenClaw config generation ---
 
@@ -68,9 +62,6 @@ const REASONING_MODELS = new Set([
   "gpt-5.2-think-deeper",
 ]);
 
-/**
- * Generate the OpenClaw provider config for M365 Copilot.
- */
 export function generateOpenClawConfig(proxyPort: number = 4141): OpenClawConfig {
   const models = getAvailableModels();
 
@@ -109,16 +100,20 @@ export function generateOpenClawConfig(proxyPort: number = 4141): OpenClawConfig
   };
 }
 
+export interface ProxyHandle {
+  port: number;
+  close: () => void;
+}
+
 /**
  * Start the M365 proxy and return the OpenClaw config pointing to it.
  */
-export async function startForOpenClaw(options: ProxyOptions = {}): Promise<{
-  proxy: ProxyServer;
+export async function startForOpenClaw(options: { port?: number } = {}): Promise<{
+  proxy: ProxyHandle;
   config: OpenClawConfig;
 }> {
   log.info("Starting M365 proxy for OpenClaw...");
 
-  // Ensure we have a valid token
   try {
     await getToken();
   } catch (err: any) {
@@ -126,13 +121,20 @@ export async function startForOpenClaw(options: ProxyOptions = {}): Promise<{
     throw err;
   }
 
-  const proxy = await createProxyServer({
-    port: options.port ?? 4141,
-    ...options,
-  });
+  const app = createApp();
+  const port = options.port ?? 4141;
 
-  const config = generateOpenClawConfig(proxy.port);
-  log.info(`Proxy started on port ${proxy.port}`);
+  const server = serve({ fetch: app.fetch, port });
+  const actualPort = port; // @hono/node-server uses the port as-is
 
-  return { proxy, config };
+  const config = generateOpenClawConfig(actualPort);
+  log.info(`Proxy started on port ${actualPort}`);
+
+  return {
+    proxy: {
+      port: actualPort,
+      close: () => server.close(),
+    },
+    config,
+  };
 }

@@ -1,88 +1,14 @@
 import type { Plugin } from "@opencode-ai/plugin";
-import {
-  getToken,
-  getAvailableModels,
-  loginAutomated,
-  createLogger,
-  handleChatCompletion,
-  ChatCompletionRequest,
-  formatMessages,
-  formatToolDefinitions,
-  parseToolCalls,
-  TOOL_CALL_FENCE,
-  TOOL_CALL_FENCE_CLOSE,
-  type ParsedToolCall,
-  type ParseResult,
-} from "@opencode-m365/core";
+import { getToken, loginAutomated, createLogger } from "@opencode-m365/core";
+import { createApp } from "@opencode-m365/proxy-lib";
 
 const log = createLogger("opencode-plugin");
 
-// Re-export shared utilities for tests
-export {
-  formatMessages,
-  formatToolDefinitions,
-  parseToolCalls,
-  TOOL_CALL_FENCE,
-  TOOL_CALL_FENCE_CLOSE,
-  type ParsedToolCall,
-  type ParseResult,
-};
+const app = createApp();
 
-/**
- * Custom fetch that intercepts OpenAI-compatible requests and handles them
- * in-process via M365 Copilot — no HTTP proxy needed.
- */
 async function m365Fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const url = typeof input === "string" ? new URL(input) : input instanceof URL ? input : new URL(input.url);
-  const method = init?.method || "GET";
-
-  log.info(`${method} ${url.pathname}`);
-
-  // GET /v1/models
-  if (url.pathname.endsWith("/models") && method === "GET") {
-    const created = Math.floor(Date.now() / 1000);
-    return new Response(JSON.stringify({
-      object: "list",
-      data: getAvailableModels().map((id) => ({
-        id,
-        object: "model",
-        created,
-        owned_by: "microsoft",
-      })),
-    }), {
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
-  // POST /v1/chat/completions
-  if (url.pathname.endsWith("/chat/completions") && method === "POST") {
-    try {
-      const rawBody = typeof init?.body === "string"
-        ? init.body
-        : init?.body instanceof ArrayBuffer
-          ? new TextDecoder().decode(init.body)
-          : init?.body instanceof Uint8Array
-            ? new TextDecoder().decode(init.body)
-            : await new Response(init?.body).text();
-
-      const body = ChatCompletionRequest.parse(JSON.parse(rawBody));
-      return await handleChatCompletion(body);
-    } catch (err: any) {
-      log.error("Chat completion error:", err.message);
-      return new Response(JSON.stringify({
-        error: { message: err.message, type: "invalid_request_error" },
-      }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-  }
-
-  // Fallback
-  return new Response(JSON.stringify({ error: { message: "Not found" } }), {
-    status: 404,
-    headers: { "Content-Type": "application/json" },
-  });
+  return app.fetch(new Request(url, init));
 }
 
 // --- Plugin ---
@@ -97,6 +23,15 @@ export const M365Plugin: Plugin = async (_input) => {
   }
 
   return {
+    "experimental.chat.system.transform": async (_input, output) => {
+      // Replace opencode's verbose system prompt with a minimal one.
+      // Our tool-calling instructions are injected per-request by proxy-lib,
+      // so the system prompt just needs basic context.
+      output.system = [
+        "You are a helpful coding assistant. Follow tool-calling instructions exactly as given.",
+      ];
+    },
+
     auth: {
       provider: "m365",
 

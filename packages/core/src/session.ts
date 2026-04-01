@@ -59,6 +59,10 @@ const VARIANTS = [
 
 export interface CopilotSessionOptions {
   agentId?: string;
+  /** Reuse an existing session ID across reconnections. */
+  sessionId?: string;
+  /** Reuse an existing conversation ID so M365 finds the same server-side conversation. */
+  conversationId?: string;
 }
 
 /**
@@ -67,12 +71,14 @@ export interface CopilotSessionOptions {
  * reconnecting the WebSocket for each message.
  */
 export class CopilotSession {
-  private sessionId = crypto.randomUUID();
-  private conversationId = crypto.randomUUID();
+  private sessionId: string;
+  private conversationId: string;
   private invocationId = 0;
   private agentId?: string;
 
   constructor(options?: CopilotSessionOptions) {
+    this.sessionId = options?.sessionId ?? crypto.randomUUID();
+    this.conversationId = options?.conversationId ?? crypto.randomUUID();
     this.agentId = options?.agentId;
     log.info(`New session: sid=${this.sessionId}, cid=${this.conversationId}, agent=${this.agentId ?? "none"}`);
   }
