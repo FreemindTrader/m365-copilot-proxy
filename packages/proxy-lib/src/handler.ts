@@ -100,15 +100,10 @@ function simpleHash(str: string): string {
 function formatDeltaMessages(messages: ParsedMessage[]): string {
   const parts: string[] = [];
   for (const m of messages) {
-    if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
-      const calls = m.tool_calls.map((tc) => {
-        const args = typeof tc.function.arguments === "string"
-          ? tc.function.arguments
-          : JSON.stringify(tc.function.arguments);
-        return `{"tool": "${tc.function.name}", "arguments": ${args}}`;
-      }).join("\n");
-      const content = getMessageContent(m);
-      parts.push(`<assistant>${content ? "\n" + content : ""}\n${calls}\n</assistant>`);
+    if (m.role === "assistant") {
+      // Skip assistant messages — M365 already has them server-side.
+      // Echoing them back as a user message confuses M365.
+      continue;
     } else if (m.role === "tool") {
       const name = m.name || "unknown";
       const callId = m.tool_call_id || "?";
@@ -148,48 +143,85 @@ export async function handleChatCompletion(
     log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=full, cid=${convId}`);
   } else {
     const newMessages = body.messages.slice(conv.sentMessageCount);
-    if (newMessages.length > 0) {
-      text = formatDeltaMessages(newMessages);
+    const delta = newMessages.length > 0 ? formatDeltaMessages(newMessages) : "";
+    if (delta.length > 0) {
+      text = delta;
       log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, new=${newMessages.length}, turn=${session.turnCount}, mode=delta, cid=${convId}`);
     } else {
-      // Same message count = retry. M365 already has the context, just nudge it.
+      // No meaningful new content to send — nudge M365 to continue.
       text = "Please continue.";
       log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=retry, cid=${convId}`);
     }
   }
 
-  conv.sentMessageCount = body.messages.length;
   log.debug("Formatted prompt:", text.slice(0, 1000));
 
   const completionId = `chatcmpl-${crypto.randomUUID()}`;
   const created = Math.floor(Date.now() / 1000);
 
-  let copilotStream;
-  try {
-    copilotStream = await session.run(text, model);
-  } catch (err: any) {
-    return jsonResponse(502, { error: { message: err.message, type: "upstream_error" } });
+  // Run with retry on rate limit (empty response). Buffers the full response.
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 10_000;
+
+  async function runBuffered(): Promise<{ fullText: string } | { error: Response }> {
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      let copilotStream;
+      try {
+        copilotStream = await session.run(text, model);
+      } catch (err: any) {
+        return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
+      }
+
+      let fullText = "";
+      try {
+        for await (const delta of copilotStream) fullText += delta;
+        if (copilotStream.fullText && copilotStream.fullText.length > fullText.length) {
+          fullText = copilotStream.fullText;
+        }
+      } catch (err: any) {
+        return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
+      }
+
+      if (copilotStream.hasContent || fullText.length > 0) {
+        return { fullText };
+      }
+
+      // Rate limited — sleep and retry
+      if (attempt < MAX_RETRIES) {
+        const delay = RETRY_DELAY_MS * (attempt + 1);
+        log.info(`Rate limited, retrying in ${delay / 1000}s (attempt ${attempt + 1}/${MAX_RETRIES})`);
+        await new Promise(r => setTimeout(r, delay));
+        text = "Please continue."; // M365 already has context
+      } else {
+        return { error: rateLimitResponse(copilotStream.throttle) };
+      }
+    }
+    return { error: rateLimitResponse(null) };
   }
 
   // When tools are present, buffer full response to detect tool calls
   if (hasTools) {
-    let fullText = "";
-    try {
-      for await (const delta of copilotStream) fullText += delta;
-      if (copilotStream.fullText && copilotStream.fullText.length > fullText.length) {
-        fullText = copilotStream.fullText;
-      }
-
-      if (!copilotStream.hasContent && fullText.length === 0) {
-        return rateLimitResponse(copilotStream.throttle);
-      }
-    } catch (err: any) {
-      return jsonResponse(502, { error: { message: err.message, type: "upstream_error" } });
-    }
+    const result = await runBuffered();
+    if ("error" in result) return result.error;
+    conv.sentMessageCount = body.messages.length;
+    const fullText = result.fullText;
 
     log.debug("Raw response (tool mode):", fullText.slice(0, 1000));
-    const parsed = parseToolCalls(fullText);
+    let parsed = parseToolCalls(fullText);
     log.info(`Parse result: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
+
+    // Fail-closed: if model mixed text with tool calls, strip text and re-prompt once.
+    // This enforces the "output ONLY a tool call" contract.
+    if (parsed.hasToolCalls && parsed.textContent) {
+      const extraText = parsed.textContent.trim();
+      if (extraText.length > 0) {
+        log.info(`Mixed output detected (${extraText.length} chars of text alongside ${parsed.toolCalls.length} tool calls), stripping text`);
+        // Strip the text — the tool calls are what the client needs.
+        // Log the stripped text for debugging but don't send it downstream.
+        log.debug("Stripped text:", extraText.slice(0, 500));
+        parsed = { ...parsed, textContent: null };
+      }
+    }
 
     // Handle "reply" tool calls — convert to plain text
     if (parsed.hasToolCalls) {
@@ -231,7 +263,7 @@ export async function handleChatCompletion(
             index: 0,
             message: {
               role: "assistant",
-              content: parsed.textContent,
+              content: null,
               tool_calls: parsed.toolCalls,
             },
             finish_reason: "tool_calls",
@@ -251,69 +283,20 @@ export async function handleChatCompletion(
       }
     }
   } else if (body.stream) {
-    // No tools — streaming passthrough
-    const stream = new ReadableStream({
-      async start(controller) {
-        const enc = new TextEncoder();
-        let hasAnything = false;
-
-        try {
-          for await (const delta of copilotStream) {
-            if (!hasAnything) {
-              controller.enqueue(enc.encode(`data: ${JSON.stringify({
-                id: completionId, object: "chat.completion.chunk", created, model,
-                choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
-              })}\n\n`));
-              hasAnything = true;
-            }
-            controller.enqueue(enc.encode(`data: ${JSON.stringify({
-              id: completionId, object: "chat.completion.chunk", created, model,
-              choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
-            })}\n\n`));
-          }
-        } catch {}
-
-        if (!hasAnything && !copilotStream.hasContent) {
-          const msg = rateLimitMessage(copilotStream.throttle);
-          controller.enqueue(enc.encode(`data: ${JSON.stringify({
-            id: completionId, object: "chat.completion.chunk", created, model,
-            choices: [{ index: 0, delta: { content: msg }, finish_reason: null }],
-          })}\n\n`));
-        }
-
-        if (hasAnything || !copilotStream.hasContent) {
-          controller.enqueue(enc.encode(`data: ${JSON.stringify({
-            id: completionId, object: "chat.completion.chunk", created, model,
-            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-          })}\n\n`));
-          controller.enqueue(enc.encode("data: [DONE]\n\n"));
-        }
-        controller.close();
-      },
-    });
-
-    return new Response(stream, {
-      headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
-    });
+    // No tools, streaming — buffer with retry, then stream the result
+    const result = await runBuffered();
+    if ("error" in result) return result.error;
+    conv.sentMessageCount = body.messages.length;
+    return sseResponse(streamText(completionId, created, model, result.fullText));
   } else {
     // No tools, no streaming
-    let fullText = "";
-    try {
-      for await (const delta of copilotStream) fullText += delta;
-      if (copilotStream.fullText && copilotStream.fullText.length > fullText.length) {
-        fullText = copilotStream.fullText;
-      }
-    } catch (err: any) {
-      return jsonResponse(502, { error: { message: err.message, type: "upstream_error" } });
-    }
-
-    if (!copilotStream.hasContent && fullText.length === 0) {
-      return rateLimitResponse(copilotStream.throttle);
-    }
+    const result = await runBuffered();
+    if ("error" in result) return result.error;
+    conv.sentMessageCount = body.messages.length;
 
     return jsonResponse(200, {
       id: completionId, object: "chat.completion", created, model,
-      choices: [{ index: 0, message: { role: "assistant", content: fullText }, finish_reason: "stop" }],
+      choices: [{ index: 0, message: { role: "assistant", content: result.fullText }, finish_reason: "stop" }],
       usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     });
   }

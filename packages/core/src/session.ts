@@ -73,7 +73,7 @@ export interface CopilotSessionOptions {
 export class CopilotSession {
   private sessionId: string;
   private conversationId: string;
-  private invocationId = 0;
+  private _turnCount = 0;
   private agentId?: string;
 
   constructor(options?: CopilotSessionOptions) {
@@ -85,25 +85,25 @@ export class CopilotSession {
 
   /** Number of turns completed in this session */
   get turnCount(): number {
-    return this.invocationId;
+    return this._turnCount;
   }
 
   /**
    * Send a message in this conversation and stream the response.
-   * The WebSocket reconnects each turn but reuses session/conversation IDs,
-   * so M365 maintains server-side context.
+   * Each turn opens a fresh WebSocket with invocationId "0" (per SignalR protocol).
+   * Session/conversation IDs are reused so M365 maintains server-side context.
    */
   chat(token: string, text: string, model: string = "m365-copilot"): Promise<CopilotStream> {
-    const isFirst = this.invocationId === 0;
-    const invId = String(this.invocationId++);
+    const isFirst = this._turnCount === 0;
+    this._turnCount++;
 
-    log.info(`Chat turn ${invId}: model=${model}, isFirst=${isFirst}, text=${JSON.stringify(text.slice(0, 200))}`);
+    log.info(`Chat turn ${this._turnCount - 1}: model=${model}, isFirst=${isFirst}, text=${JSON.stringify(text.slice(0, 200))}`);
 
     const claims = decodeJwt(token);
     const requestId = crypto.randomUUID();
 
     const params = new URLSearchParams({
-      chatsessionid: this.sessionId,
+      chatsessionid: requestId,
       clientrequestid: requestId,
       "X-SessionId": this.sessionId,
       ConversationId: this.conversationId,
@@ -345,7 +345,7 @@ export class CopilotSession {
               disconnectBehavior: "continue",
             },
           ],
-          invocationId: invId,
+          invocationId: "0",
           target: "chat",
           type: 4,
         };

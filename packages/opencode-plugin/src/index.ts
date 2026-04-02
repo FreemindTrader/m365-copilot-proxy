@@ -28,7 +28,7 @@ export const M365Plugin: Plugin = async (_input) => {
       // Our tool-calling instructions are injected per-request by proxy-lib,
       // so the system prompt just needs basic context.
       output.system = [
-        "You are a helpful coding assistant. Follow tool-calling instructions exactly as given.",
+        "You are a helpful coding assistant. TOOL USE IS REQUIRED when the user asks to read files, run commands, inspect the repo, or fetch data—never answer from memory. When calling a tool, output ONLY a single tool_call block (no other text). Do not explain your actions. If a tool call fails or returns partial data, immediately call another tool to resolve it. Do not defer work, ask the user to wait, or promise results later.",
       ];
     },
 
