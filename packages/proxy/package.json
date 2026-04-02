@@ -1,6 +1,6 @@
 {
   "name": "@opencode-m365/proxy",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "bin": {
     "m365-proxy": "./dist/server.mjs"
@@ -13,7 +13,9 @@
   },
   "main": "./dist/server.mjs",
   "types": "./dist/server.d.mts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "dev": "tsx src/server.ts",
     "build": "tsdown src/server.ts --format esm --dts"
