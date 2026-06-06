@@ -16,9 +16,10 @@ M365 Copilot uses a SignalR WebSocket protocol, not the OpenAI API. This project
 M365 Copilot doesn't support OpenAI-style `tool_calls` natively. Instead:
 
 - Tool definitions are injected into the prompt as a compact text list
-- The model outputs tool calls using fenced code blocks: `` ```tool_call\n{"name": "bash", "arguments": {"command": "ls"}}\n``` ``
-- The proxy/handler parses these blocks and converts them to OpenAI `tool_calls` format
-- A `reply` tool lets the model produce text responses in the same format, which gets converted back to plain text
+- The model emits a JSON tool call — `{"tool": "bash", "arguments": {"command": "ls"}}` — either bare or inside a ```` ```json ```` fence (the parser strips the fence)
+- The proxy/handler parses that and converts it to OpenAI `tool_calls` format
+- A `reply` tool lets the model produce text responses in the same channel, which gets converted back to plain text
+- **Reliability comes from the Copilot Studio agent (below), not the JSON syntax** — without the agent, M365 ignores tool instructions and answers in prose
 
 ### Agent mode
 
@@ -193,8 +194,8 @@ pnpm run test:live    # Run live integration tests against M365
 
 ## Known limitations
 
-- Each WebSocket turn sends the full message history (no delta optimization yet)
-- M365 Copilot's built-in system prompt can interfere with tool-calling instructions
-- The `think-deeper` models take 10-30s per response
-- Rate limit is ~600 messages per conversation
-- Tool calling uses prompt injection (fenced code blocks), not native function calling — model compliance is ~90%
+- **M365 "disengages" on large tool payloads** — heavy agent harnesses (e.g. opencode's ~15-tool prompt) get empty `Disengaged` responses. Keep the toolset lean (this is why [pi](https://pi.dev/) works well). See [docs/m365-copilot-api.md](docs/m365-copilot-api.md#the-disengaged-filter).
+- Tool calling is emulated (prompt injection + a Copilot Studio agent), not native function calling — robust with the agent, unreliable without it
+- The `think-deeper` / `*_Reasoning` models take 10-30s per response
+- Hard quota of ~600 messages **per conversation** (mitigated by session reuse + delta sends)
+- Streaming is buffered server-side then re-emitted as SSE, so `stream: true` isn't truly incremental yet
