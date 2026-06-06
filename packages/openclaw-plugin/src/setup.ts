@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { generateOpenClawConfig, startForOpenClaw } from "./index.js";
-import { getToken, createLogger } from "@opencode-m365/core";
+import { getToken, createLogger } from "@m365-copilot/core";
 
 const log = createLogger("openclaw-setup");
 

@@ -1,5 +1,5 @@
-import { getToken, getAvailableModels, createLogger } from "@opencode-m365/core";
-import { createApp } from "@opencode-m365/proxy-lib";
+import { getToken, getAvailableModels, createLogger } from "@m365-copilot/core";
+import { createApp } from "@m365-copilot/proxy-lib";
 import { serve } from "@hono/node-server";
 
 const log = createLogger("openclaw-plugin");

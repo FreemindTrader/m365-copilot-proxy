@@ -48,10 +48,10 @@ importers:
       '@hono/node-server':
         specifier: ^1.19.12
         version: 1.19.12(hono@4.12.9)
-      '@opencode-m365/core':
+      '@m365-copilot/core':
         specifier: workspace:*
         version: link:../core
-      '@opencode-m365/proxy-lib':
+      '@m365-copilot/proxy-lib':
         specifier: workspace:*
         version: link:../proxy-lib
 
@@ -60,10 +60,10 @@ importers:
       '@hono/node-server':
         specifier: ^1.19.12
         version: 1.19.12(hono@4.12.9)
-      '@opencode-m365/core':
+      '@m365-copilot/core':
         specifier: workspace:*
         version: link:../core
-      '@opencode-m365/proxy-lib':
+      '@m365-copilot/proxy-lib':
         specifier: workspace:*
         version: link:../proxy-lib
     devDependencies:
@@ -73,7 +73,7 @@ importers:
 
   packages/proxy-lib:
     dependencies:
-      '@opencode-m365/core':
+      '@m365-copilot/core':
         specifier: workspace:*
         version: link:../core
       hono:

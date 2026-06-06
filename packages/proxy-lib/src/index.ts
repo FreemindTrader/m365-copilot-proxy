@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { type ModelSessionOptions, getAvailableModels } from "@opencode-m365/core";
+import { type ModelSessionOptions, getAvailableModels } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import { SessionPool, handleChatCompletion } from "./handler.js";
 
@@ -18,7 +18,7 @@ export {
   type ToolChoice,
   type ParsedToolCall,
   type ParseResult,
-} from "@opencode-m365/core";
+} from "@m365-copilot/core";
 
 /**
  * Create a Hono app that serves an OpenAI-compatible API

@@ -1,5 +1,5 @@
 {
-  "name": "@opencode-m365/proxy",
+  "name": "@m365-copilot/proxy",
   "version": "0.2.0",
   "type": "module",
   "bin": {
@@ -22,8 +22,8 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.19.12",
-    "@opencode-m365/core": "workspace:*",
-    "@opencode-m365/proxy-lib": "workspace:*"
+    "@m365-copilot/core": "workspace:*",
+    "@m365-copilot/proxy-lib": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0"

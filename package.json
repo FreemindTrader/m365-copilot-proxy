@@ -1,9 +1,9 @@
 {
-  "name": "opencode-m365",
+  "name": "m365-copilot-proxy",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "pnpm --filter @opencode-m365/proxy dev",
+    "dev": "pnpm --filter @m365-copilot/proxy dev",
     "build": "pnpm -r build",
     "proxy": "node packages/proxy/dist/server.mjs",
     "test": "pnpm test:unit",

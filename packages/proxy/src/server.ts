@@ -1,6 +1,6 @@
 import { serve } from "@hono/node-server";
-import { getToken } from "@opencode-m365/core";
-import { createApp } from "@opencode-m365/proxy-lib";
+import { getToken } from "@m365-copilot/core";
+import { createApp } from "@m365-copilot/proxy-lib";
 
 const PORT = parseInt(process.argv[2] || "4141", 10);
 

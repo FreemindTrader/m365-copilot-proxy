@@ -5,7 +5,7 @@ import {
   formatMessages,
   parseToolCalls,
   getMessageContent,
-} from "@opencode-m365/core";
+} from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import type { z } from "zod/v4";
 

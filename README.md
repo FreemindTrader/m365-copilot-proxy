@@ -1,4 +1,4 @@
-# opencode-m365
+# m365-copilot-proxy
 
 Use Microsoft 365 Copilot as an LLM backend for OpenAI-compatible coding agents like [pi](https://pi.dev/) and [OpenClaw](https://docs.openclaw.ai/). Wraps M365 Copilot's WebSocket/SignalR API in an OpenAI-compatible interface with tool calling support.
 
@@ -32,14 +32,14 @@ On first use, the system creates a **Copilot Studio agent** with tool-calling in
 
 ### Conversation reuse
 
-Each OpenCode session reuses the same M365 conversation (same `sessionId` + `conversationId`). The WebSocket reconnects per turn but M365 maintains server-side context. This saves quota — the 600 message limit applies per-conversation.
+Each agent session reuses the same M365 conversation (same `sessionId` + `conversationId`). The WebSocket reconnects per turn but M365 maintains server-side context. This saves quota — the 600 message limit applies per-conversation.
 
 ## Packages
 
 ```
-@opencode-m365/core          — Shared: auth, WebSocket client, tool formatting, proxy server, agent management, session
-├── @opencode-m365/proxy     — Standalone HTTP proxy binary
-└── @opencode-m365/openclaw-plugin  — OpenClaw config generator + setup CLI + skill
+@m365-copilot/core          — Shared: auth, WebSocket client, tool formatting, proxy server, agent management, session
+├── @m365-copilot/proxy     — Standalone HTTP proxy binary
+└── @m365-copilot/openclaw-plugin  — OpenClaw config generator + setup CLI + skill
 ```
 
 ## Setup
@@ -54,8 +54,8 @@ Each OpenCode session reuses the same M365 conversation (same `sessionId` + `con
 ### 1. Install
 
 ```sh
-git clone https://github.com/cramt/opencode-m365
-cd opencode-m365
+git clone https://github.com/cramt/m365-copilot-proxy
+cd m365-copilot-proxy
 pnpm install
 pnpm build
 ```
@@ -187,8 +187,8 @@ All stored in `~/.config/opencode-m365/`:
 pnpm install
 pnpm build            # Build all packages
 pnpm run dev          # Start standalone proxy on :4141
-pnpm run test         # Launch opencode with M365 backend
-pnpm run test:unit    # Run vitest unit + integration tests
+pnpm run test:unit    # Run vitest unit tests (no auth/network)
+pnpm run test:live    # Run live integration tests against M365
 ```
 
 ## Known limitations

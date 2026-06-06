@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { generateOpenClawConfig, startForOpenClaw, type ProxyHandle } from "./index.js";
-import { getAvailableModels } from "@opencode-m365/core";
+import { getAvailableModels } from "@m365-copilot/core";
 
 // --- Sample tools for integration tests ---
 

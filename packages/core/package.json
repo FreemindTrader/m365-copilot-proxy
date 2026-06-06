@@ -1,5 +1,5 @@
 {
-  "name": "@opencode-m365/core",
+  "name": "@m365-copilot/core",
   "version": "0.2.0",
   "type": "module",
   "exports": {
