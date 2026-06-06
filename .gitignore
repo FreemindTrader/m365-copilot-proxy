@@ -5,3 +5,5 @@ msal-cache.json
 secrets.json
 *.har
 .env
+result
+result-*
