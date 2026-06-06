@@ -5,7 +5,7 @@ import {
   existsSync,
   mkdirSync,
 } from "node:fs";
-import { exec } from "node:child_process";
+import { exec, execSync } from "node:child_process";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -107,6 +107,199 @@ async function exchangeCode(
   return result.accessToken;
 }
 
+// --- Shared automated browser login ---
+
+const LOGIN_DEBUG_DIR = join(CONFIG_DIR, "login-debug");
+
+interface Credentials {
+  email: string;
+  password: string;
+  mfaSecret: string;
+}
+
+/**
+ * Resolve a usable Chromium executable. Playwright's bundled chrome-headless-shell
+ * is not patched for NixOS (fails on libglib-2.0.so.0), so prefer an explicit
+ * CHROMIUM_PATH, then a system chromium on PATH. Returns undefined to let
+ * Playwright use its bundled browser (works on patched/standard distros).
+ */
+function resolveChromiumPath(): string | undefined {
+  if (process.env.CHROMIUM_PATH) return process.env.CHROMIUM_PATH;
+  for (const bin of ["chromium", "chromium-browser", "google-chrome", "chrome"]) {
+    try {
+      const found = execSync(`command -v ${bin}`, { stdio: ["ignore", "pipe", "ignore"] })
+        .toString()
+        .trim();
+      if (found) {
+        log.info(`Resolved system browser: ${found}`);
+        return found;
+      }
+    } catch {
+      // not on PATH, try next
+    }
+  }
+  return undefined;
+}
+
+async function capture(page: any, label: string): Promise<void> {
+  try {
+    mkdirSync(LOGIN_DEBUG_DIR, { recursive: true });
+    await page.screenshot({
+      path: join(LOGIN_DEBUG_DIR, `${label}.png`),
+      fullPage: true,
+    });
+    writeFileSync(join(LOGIN_DEBUG_DIR, `${label}.html`), await page.content());
+    // Write the URL unconditionally (independent of the debug-log flag).
+    writeFileSync(join(LOGIN_DEBUG_DIR, `${label}.url.txt`), page.url());
+    log.info(`Captured ${label} — url: ${page.url()}`);
+  } catch (e: any) {
+    log.error(`Failed to capture ${label}: ${e?.message}`);
+  }
+}
+
+/**
+ * Fill a visible input and verify the value actually landed. The converged AAD
+ * login page keeps hidden duplicate inputs around, so a naive fill can target a
+ * stale hidden node and leave the visible field empty. Refill via typing if so.
+ */
+async function fillVerified(
+  page: any,
+  selector: string,
+  value: string,
+  label: string,
+): Promise<void> {
+  const loc = page.locator(`${selector}:visible`).first();
+  await loc.waitFor({ state: "visible", timeout: 20000 });
+  await loc.click();
+  await loc.fill(value);
+  let got = await loc.inputValue();
+  if (got !== value) {
+    log.info(`${label}: fill mismatch (${got.length} chars), retyping`);
+    await loc.fill("");
+    await loc.pressSequentially(value, { delay: 20 });
+    got = await loc.inputValue();
+  }
+  if (got !== value) {
+    throw new Error(`${label}: field still empty after refill`);
+  }
+}
+
+/** Click the visible primary submit button (Next / Sign in / Verify / Yes). */
+async function clickSubmit(page: any): Promise<void> {
+  await page
+    .locator('input[type="submit"]:visible, button[type="submit"]:visible')
+    .first()
+    .click();
+}
+
+/** Drive the Azure AD interactive login form using stored credentials + TOTP. */
+async function driveAzureLogin(page: any, creds: Credentials): Promise<void> {
+  const { TOTP } = await import("otpauth");
+
+  await capture(page, "step0-landing");
+
+  log.info("Step: email");
+  await fillVerified(page, 'input[name="loginfmt"]', creds.email, "email");
+  await clickSubmit(page);
+  await capture(page, "step1-after-email");
+
+  log.info("Step: password");
+  await fillVerified(page, 'input[name="passwd"]', creds.password, "password");
+  await clickSubmit(page);
+  await capture(page, "step2-after-password");
+
+  log.info("Step: mfa");
+  const otpCode = new TOTP({ secret: creds.mfaSecret }).generate();
+  await fillVerified(page, 'input[name="otc"]', otpCode, "otc");
+  await clickSubmit(page);
+  await capture(page, "step3-after-mfa");
+
+  // "Stay signed in?" — may or may not appear
+  log.info("Step: stay-signed-in");
+  try {
+    await page.locator("#idSIButton9:visible").click({ timeout: 8000 });
+  } catch {
+    // not shown
+  }
+}
+
+/**
+ * Acquire a token for the given scopes via a headless browser login.
+ * Retries up to `attempts` times, capturing screenshots/HTML on each failure.
+ * TOTP codes are single-use per 30s window, so retries wait for a fresh window.
+ * Returns null if all attempts fail.
+ */
+async function runBrowserLogin(
+  app: msal.PublicClientApplication,
+  scopes: string[],
+  creds: Credentials,
+  attempts = 3,
+): Promise<string | null> {
+  const { chromium } = await import("playwright");
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const { authUrl, verifier } = await buildAuthUrlForScopes(app, scopes);
+    const browser = await chromium.launch({
+      headless: true,
+      executablePath: resolveChromiumPath(),
+      args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    });
+    const page = await browser.newPage();
+
+    // The nativeclient redirect URI is meant for embedded native hosts to
+    // intercept; a real browser follows it one hop further to /common/wrongplace,
+    // so the ?code= only exists transiently. Capture it from the navigation
+    // request itself rather than waiting for the URL to settle.
+    let resolveCode: (code: string) => void;
+    const codePromise = new Promise<string>((res) => {
+      resolveCode = res;
+    });
+    page.on("request", (req: any) => {
+      const u = req.url();
+      if (u.includes("/oauth2/nativeclient") && u.includes("code=")) {
+        const c = new URL(u).searchParams.get("code");
+        if (c) {
+          log.info("Captured auth code from nativeclient redirect");
+          resolveCode(c);
+        }
+      }
+    });
+
+    try {
+      log.info(`Browser login attempt ${attempt}/${attempts} for [${scopes.join(", ")}]`);
+      await page.goto(authUrl, { waitUntil: "domcontentloaded" });
+      await driveAzureLogin(page, creds);
+
+      const authCode = await Promise.race([
+        codePromise,
+        new Promise<string>((_, rej) =>
+          setTimeout(() => rej(new Error("Timed out waiting for auth code")), 30000),
+        ),
+      ]);
+
+      const result = await app.acquireTokenByCode({
+        code: authCode,
+        scopes,
+        redirectUri: REDIRECT_URI,
+        codeVerifier: verifier,
+      });
+      saveCache(app);
+      log.info(`Browser login succeeded as ${result.account?.username}`);
+      return result.accessToken;
+    } catch (err: any) {
+      await capture(page, `attempt-${attempt}-fail`);
+      log.error(`Browser login attempt ${attempt}/${attempts} failed: ${err.message}`);
+      if (attempt < attempts) {
+        // Wait for a fresh TOTP window so the next code isn't a reused one.
+        await new Promise((r) => setTimeout(r, 31_000));
+      }
+    } finally {
+      await browser.close();
+    }
+  }
+  return null;
+}
+
 // --- Token acquisition methods ---
 
 export async function getTokenSilent(): Promise<string | null> {
@@ -127,6 +320,11 @@ export async function getTokenSilent(): Promise<string | null> {
 }
 
 export async function loginInteractive(): Promise<string> {
+  if (process.env.M365_NO_INTERACTIVE) {
+    throw new Error(
+      "Interactive login disabled (M365_NO_INTERACTIVE set) — refusing to open a browser",
+    );
+  }
   const app = getApp();
   const { authUrl, verifier } = await buildAuthUrl(app);
 
@@ -159,58 +357,19 @@ export async function loginAutomated(
   mfaSecret: string,
 ): Promise<string> {
   const app = getApp();
-  const { authUrl, verifier } = await buildAuthUrl(app);
-
   log.info("Starting automated login...");
-
-  const { TOTP } = await import("otpauth");
-  const { chromium } = await import("playwright");
-
-  const browser = await chromium.launch({
-    headless: true,
-    executablePath: process.env.CHROMIUM_PATH,
-  });
-  const page = await browser.newPage();
-
-  try {
-    await page.goto(authUrl);
-
-    log.info("Entering email...");
-    await page.waitForSelector('input[type="email"]', { timeout: 15000 });
-    await page.fill('input[type="email"]', email);
-    await page.click('input[type="submit"]');
-
-    log.info("Entering password...");
-    await page.waitForSelector('input[type="password"]', { timeout: 15000 });
-    await page.fill('input[type="password"]', password);
-    await page.click('input[type="submit"]');
-
-    log.info("Entering MFA code...");
-    const totp = new TOTP({ secret: mfaSecret });
-    const otpCode = totp.generate();
-
-    await page.waitForSelector('input[name="otc"]', { timeout: 15000 });
-    await page.fill('input[name="otc"]', otpCode);
-    await page.click('input[type="submit"]');
-
-    try {
-      await page.waitForSelector('input[type="submit"]', { timeout: 5000 });
-      await page.click('input[type="submit"]');
-    } catch {
-      // "Stay signed in?" may not appear
-    }
-
-    log.info("Waiting for redirect...");
-    await page.waitForURL("**/oauth2/nativeclient**", { timeout: 15000 });
-
-    const authCode = new URL(page.url()).searchParams.get("code");
-    if (!authCode) throw new Error("No auth code in redirect URL");
-
-    log.info("Got auth code, exchanging for token...");
-    return await exchangeCode(app, authCode, verifier);
-  } finally {
-    await browser.close();
+  const token = await runBrowserLogin(
+    app,
+    SCOPES,
+    { email, password, mfaSecret },
+    1,
+  );
+  if (!token) {
+    throw new Error(
+      `Automated login failed — see artifacts in ${LOGIN_DEBUG_DIR}`,
+    );
   }
+  return token;
 }
 
 export function loadSecrets(): {
@@ -230,78 +389,37 @@ export async function getTokenForScope(scopes: string[]): Promise<string | null>
   const app = getApp();
   const accounts = await app.getTokenCache().getAllAccounts();
   log.info(`getTokenForScope: ${scopes.join(",")} — ${accounts.length} accounts in cache`);
-  if (accounts.length === 0) return null;
 
-  try {
-    const result = await app.acquireTokenSilent({
-      scopes,
-      account: accounts[0],
-    });
-    saveCache(app);
-    return result.accessToken;
-  } catch (err: any) {
-    // Silent failed — try automated login with stored credentials
-    log.info(`getTokenForScope: silent failed (${err.message}), trying automated login`);
-    const secrets = loadSecrets();
-    if (!secrets) return null;
-
+  if (accounts.length > 0) {
     try {
-      // Do a fresh PKCE flow for the new scope
-      const { authUrl, verifier } = await buildAuthUrlForScopes(app, scopes);
-      const { chromium } = await import("playwright");
-      const { TOTP } = await import("otpauth");
-
-      const browser = await chromium.launch({
-        headless: true,
-        executablePath: process.env.CHROMIUM_PATH,
+      const result = await app.acquireTokenSilent({
+        scopes,
+        account: accounts[0],
       });
-      const page = await browser.newPage();
-
-      try {
-        await page.goto(authUrl);
-        await page.waitForSelector('input[type="email"]', { timeout: 15000 });
-        await page.fill('input[type="email"]', secrets.email);
-        await page.click('input[type="submit"]');
-
-        await page.waitForSelector('input[type="password"]', { timeout: 15000 });
-        await page.fill('input[type="password"]', secrets.password);
-        await page.click('input[type="submit"]');
-
-        const totp = new TOTP({ secret: secrets.mfaSecret });
-        const otpCode = totp.generate();
-        await page.waitForSelector('input[name="otc"]', { timeout: 15000 });
-        await page.fill('input[name="otc"]', otpCode);
-        await page.click('input[type="submit"]');
-
-        try {
-          await page.waitForSelector('input[type="submit"]', { timeout: 5000 });
-          await page.click('input[type="submit"]');
-        } catch {}
-
-        await page.waitForURL("**/oauth2/nativeclient**", { timeout: 15000 });
-        const authCode = new URL(page.url()).searchParams.get("code");
-        if (!authCode) return null;
-
-        const result = await app.acquireTokenByCode({
-          code: authCode,
-          scopes,
-          redirectUri: REDIRECT_URI,
-          codeVerifier: verifier,
-        });
-        saveCache(app);
-        log.info(`Got token for scope: ${scopes.join(", ")}`);
-        return result.accessToken;
-      } finally {
-        await browser.close();
-      }
+      saveCache(app);
+      return result.accessToken;
     } catch (err: any) {
-      log.error("Automated scope login failed:", err.message);
-      return null;
+      log.info(`getTokenForScope: silent failed (${err.message}), trying browser login`);
     }
   }
+
+  // Silent unavailable — fall back to automated browser login with stored creds.
+  const secrets = loadSecrets();
+  if (!secrets) return null;
+  return runBrowserLogin(app, scopes, secrets);
 }
 
-export async function getToken(): Promise<string> {
+// Serialize token acquisition: concurrent callers share one in-flight login
+// instead of racing several browser logins against the same account.
+let inflightToken: Promise<string> | null = null;
+
+export function getToken(): Promise<string> {
+  return (inflightToken ??= doGetToken().finally(() => {
+    inflightToken = null;
+  }));
+}
+
+async function doGetToken(): Promise<string> {
   const silent = await getTokenSilent();
   if (silent) {
     log.info("Token refreshed silently");

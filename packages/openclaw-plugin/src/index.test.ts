@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { generateOpenClawConfig, startForOpenClaw, type ProxyServer } from "./index.js";
+import { generateOpenClawConfig, startForOpenClaw, type ProxyHandle } from "./index.js";
 import { getAvailableModels } from "@opencode-m365/core";
 
 // --- Sample tools for integration tests ---
@@ -70,8 +70,8 @@ describe("generateOpenClawConfig", () => {
 // Requires valid auth credentials in ~/.config/opencode-m365/secrets.json
 // Only 3 API calls to avoid rate limiting
 
-describe("OpenClaw proxy integration (live)", () => {
-  let proxy: ProxyServer;
+describe.skipIf(!process.env.M365_LIVE)("OpenClaw proxy integration (live)", () => {
+  let proxy: ProxyHandle;
   let baseUrl: string;
 
   beforeAll(async () => {

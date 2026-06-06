@@ -58,6 +58,34 @@ describe("parseToolCalls", () => {
     expect(result.toolCalls[0].function.name).toBe("bash");
   });
 
+  it("should cleanly parse a ```json fenced tool call (M365's natural markdown)", () => {
+    const input = '```json\n{"tool": "read_file", "arguments": {"path": "/etc/hostname"}}\n```';
+    const result = parseToolCalls(input);
+
+    expect(result.hasToolCalls).toBe(true);
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0].function.name).toBe("read_file");
+    // The ```json fence markers must not survive as stray prose
+    expect(result.textContent).toBeNull();
+  });
+
+  it("should strip a bare ``` fence around a tool call", () => {
+    const input = '```\n{"tool": "bash", "arguments": {"command": "ls"}}\n```';
+    const result = parseToolCalls(input);
+
+    expect(result.hasToolCalls).toBe(true);
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.textContent).toBeNull();
+  });
+
+  it("should keep real prose around a fenced tool call", () => {
+    const input = 'Here you go:\n```json\n{"tool": "bash", "arguments": {"command": "ls"}}\n```';
+    const result = parseToolCalls(input);
+
+    expect(result.hasToolCalls).toBe(true);
+    expect(result.textContent).toContain("Here you go");
+  });
+
   it("should return plain text when no tool calls present", () => {
     const input = "The answer is 42.";
     const result = parseToolCalls(input);

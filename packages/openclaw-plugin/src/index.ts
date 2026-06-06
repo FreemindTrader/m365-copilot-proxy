@@ -124,8 +124,11 @@ export async function startForOpenClaw(options: { port?: number } = {}): Promise
   const app = createApp();
   const port = options.port ?? 4141;
 
-  const server = serve({ fetch: app.fetch, port });
-  const actualPort = port; // @hono/node-server uses the port as-is
+  // Bind and resolve the *actual* port (port 0 picks a free one).
+  let server: ReturnType<typeof serve>;
+  const actualPort = await new Promise<number>((resolve) => {
+    server = serve({ fetch: app.fetch, port }, (info) => resolve(info.port));
+  });
 
   const config = generateOpenClawConfig(actualPort);
   log.info(`Proxy started on port ${actualPort}`);

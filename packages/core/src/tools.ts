@@ -214,10 +214,15 @@ export function parseToolCalls(text: string): ParseResult {
     return { hasToolCalls: false, toolCalls: [], textContent: text };
   }
 
-  // Strip matched tool calls from text to get remaining content
+  // Strip matched tool calls from text to get remaining content.
+  // M365 is a markdown model and often wraps the JSON in a ```json / ```tool_call
+  // fence even when told not to; remove the now-empty fence markers it leaves
+  // behind so they aren't mistaken for real assistant prose.
   let remaining = text
     .replace(jsonRegex, "")
     .replace(new RegExp(FENCED_TOOL_CALL_REGEX.source, "g"), "")
+    .replace(/```(?:json|tool_call)?\s*```/g, "") // empty fence pair
+    .replace(/```(?:json|tool_call)?/g, "") // dangling opening/closing fence
     .trim();
 
   return {
