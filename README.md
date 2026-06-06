@@ -1,14 +1,15 @@
 # opencode-m365
 
-Use Microsoft 365 Copilot as an LLM backend for [OpenCode](https://opencode.ai/) and [OpenClaw](https://docs.openclaw.ai/). Wraps M365 Copilot's WebSocket API in an OpenAI-compatible interface with tool calling support.
+Use Microsoft 365 Copilot as an LLM backend for OpenAI-compatible coding agents like [pi](https://pi.dev/) and [OpenClaw](https://docs.openclaw.ai/). Wraps M365 Copilot's WebSocket/SignalR API in an OpenAI-compatible interface with tool calling support.
+
+> **Want the gory protocol details?** See [docs/m365-copilot-api.md](docs/m365-copilot-api.md) — a full write-up of M365 Copilot's undocumented WebSocket API: auth, SignalR frames, tones/models, throttling, the "Disengaged" filter, and the Copilot Studio agent trick that makes tool calling work.
 
 ## How it works
 
 M365 Copilot uses a SignalR WebSocket protocol, not the OpenAI API. This project translates between the two:
 
-1. **OpenCode plugin** — Intercepts OpenAI-format requests via a custom `fetch` function (no proxy server needed). Handles everything in-process.
-2. **Standalone proxy** — HTTP server on port 4141 with `/v1/chat/completions` and `/v1/models` endpoints. Works with any OpenAI-compatible client.
-3. **OpenClaw plugin** — Config generator + setup CLI for OpenClaw's provider system.
+1. **Standalone proxy** — HTTP server with `/v1/chat/completions` and `/v1/models` endpoints. Works with any OpenAI-compatible client (pi, OpenClaw, etc.).
+2. **OpenClaw plugin** — Config generator + setup CLI for OpenClaw's provider system.
 
 ### Tool calling
 
@@ -38,7 +39,6 @@ Each OpenCode session reuses the same M365 conversation (same `sessionId` + `con
 ```
 @opencode-m365/core          — Shared: auth, WebSocket client, tool formatting, proxy server, agent management, session
 ├── @opencode-m365/proxy     — Standalone HTTP proxy binary
-├── opencode-m365-auth       — OpenCode plugin (in-process, no proxy needed)
 └── @opencode-m365/openclaw-plugin  — OpenClaw config generator + setup CLI + skill
 ```
 
@@ -74,44 +74,42 @@ Create `~/.config/opencode-m365/secrets.json`:
 
 On first run, the system does an automated browser login (via Playwright/Chromium) to get OAuth tokens. After that, tokens refresh silently from the MSAL cache.
 
-### 3. Use with OpenCode
+### 3. Use with pi (or any OpenAI-compatible agent)
 
-Add to your project's `opencode.json`:
+Start the proxy:
+
+```sh
+m365-proxy 4143        # or: pnpm run proxy 4143
+```
+
+Point [pi](https://pi.dev/) at it via `~/.pi/agent/models.json`:
 
 ```json
 {
-  "plugin": ["opencode-m365-auth"],
-  "provider": {
+  "providers": {
     "m365": {
-      "name": "M365 Copilot",
-      "npm": "@ai-sdk/openai-compatible",
-      "options": {
-        "baseURL": "https://m365-copilot.local/v1"
+      "baseUrl": "http://localhost:4143/v1",
+      "api": "openai-completions",
+      "apiKey": "m365",
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false,
+        "supportsUsageInStreaming": false
       },
-      "models": {
-        "m365-copilot": { "name": "M365 Copilot (Auto)" },
-        "quick": { "name": "GPT Quick" },
-        "think-deeper": { "name": "GPT Think Deeper" },
-        "gpt-5.4": { "name": "GPT-5.4 Think Deeper" },
-        "gpt-5.4-quick": { "name": "GPT-5.4 Quick" },
-        "gpt-5.3": { "name": "GPT-5.3 Quick" },
-        "gpt-5.3-think-deeper": { "name": "GPT-5.3 Think Deeper" }
-      }
+      "models": [{ "id": "m365-copilot", "name": "M365 Copilot" }]
     }
-  },
-  "model": "m365/m365-copilot"
+  }
 }
 ```
 
-The `baseURL` is a placeholder — the plugin overrides it with an in-process handler. No proxy server needed.
-
-Then run:
+Then run pi (keep the toolset lean — M365 "disengages" on very large tool payloads;
+see [docs/m365-copilot-api.md](docs/m365-copilot-api.md#the-disengaged-filter)):
 
 ```sh
-opencode
-# or
-opencode run --model m365/m365-copilot "your prompt"
+pi --models "m365*" -p --tools read,list,edit,write "your task"
 ```
+
+This is verified working end-to-end, including multi-tool calls and real file edits.
 
 ### 4. Use with OpenClaw
 

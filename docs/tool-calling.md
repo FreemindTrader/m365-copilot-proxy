@@ -43,9 +43,12 @@ The contract is enforced at three layers:
 - "Output ONLY a single JSON tool call. No other text."
 - "Never describe your intent."
 
-### 2. Plugin System Prompt (packages/opencode-plugin/src/index.ts)
+### 2. Copilot Studio Agent System Prompt (packages/core/src/agent.ts)
 
-The OpenCode plugin replaces the default system prompt with a minimal one that mirrors the same rules, ensuring they apply even when the proxy-level prompt is the only layer of defense.
+The most important layer: an auto-created Copilot Studio agent carries tool-calling
+instructions in its **server-side** system prompt. Without the agent, M365 ignores the
+per-request injection and answers in prose (or hallucinates). See
+[m365-copilot-api.md](./m365-copilot-api.md) for why.
 
 ### 3. Fail-Closed Parsing (packages/proxy-lib/src/handler.ts)
 

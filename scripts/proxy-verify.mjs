@@ -5,6 +5,36 @@ import { getToken } from "../packages/core/dist/index.mjs";
 
 const useAgent = process.argv.includes("--agent");
 const withTools = process.argv.includes("--tools");
+const manyTools = process.argv.includes("--manytools");
+
+// Mimic opencode's "build" agent toolset to reproduce the disengagement.
+const OPENCODE_LIKE_TOOLS = [
+  ["bash", "Execute a shell command in the project root", { command: "string", description: "string" }],
+  ["read", "Read the contents of a file", { filePath: "string", offset: "number", limit: "number" }],
+  ["write", "Write content to a file, overwriting it", { filePath: "string", content: "string" }],
+  ["edit", "Replace a string in a file", { filePath: "string", oldString: "string", newString: "string" }],
+  ["glob", "Find files matching a glob pattern", { pattern: "string", path: "string" }],
+  ["grep", "Search file contents with a regex", { pattern: "string", include: "string", path: "string" }],
+  ["list", "List files and directories", { path: "string", ignore: "array" }],
+  ["webfetch", "Fetch a URL and return its contents", { url: "string", format: "string" }],
+  ["todowrite", "Write the session todo list", { todos: "array" }],
+  ["todoread", "Read the session todo list", {}],
+  ["task", "Spawn a sub-agent for a complex task", { description: "string", prompt: "string" }],
+  ["patch", "Apply a unified diff patch to files", { patch: "string" }],
+].map(([name, description, props]) => ({
+  type: "function",
+  function: {
+    name,
+    description,
+    parameters: {
+      type: "object",
+      properties: Object.fromEntries(
+        Object.entries(props).map(([k, t]) => [k, { type: t, description: `the ${k}` }]),
+      ),
+      required: Object.keys(props).slice(0, 1),
+    },
+  },
+}));
 
 console.log(`[verify] getToken... (useAgent=${useAgent}, withTools=${withTools})`);
 await getToken();
@@ -80,10 +110,12 @@ if (process.argv.includes("--multiturn")) {
 const body = {
   model: "m365-copilot",
   stream: false,
-  messages: withTools
-    ? [{ role: "user", content: "Read the file /etc/hostname" }]
-    : [{ role: "user", content: "What is 2+2? Reply with just the number." }],
-  ...(withTools ? { tools: TOOLS } : {}),
+  messages: manyTools
+    ? [{ role: "user", content: "Reply with exactly the word: pong" }]
+    : withTools
+      ? [{ role: "user", content: "Read the file /etc/hostname" }]
+      : [{ role: "user", content: "What is 2+2? Reply with just the number." }],
+  ...(manyTools ? { tools: OPENCODE_LIKE_TOOLS } : withTools ? { tools: TOOLS } : {}),
 };
 
 console.log("[chat] sending:", JSON.stringify(body.messages));
