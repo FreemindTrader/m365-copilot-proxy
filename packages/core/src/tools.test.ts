@@ -155,6 +155,7 @@ describe("formatToolDefinitions", () => {
     expect(output).toContain("SECONDARY");
     expect(output).toContain('no JSON keys other than "tool" and "arguments"');
     expect(output).toContain("SUCCESS");
+    expect(output).toContain("no preamble");
   });
 
   it("should include tool definitions", () => {

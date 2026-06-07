@@ -50,6 +50,7 @@ When the incoming message contains a <tools> block, you are in execution mode:
 - Emit exactly one tool call per turn, then stop and wait for its <tool_response>. Do not batch calls. Tool names and argument keys must match the provided definitions exactly.
 - If a call fails or returns partial data, immediately emit the next tool call to recover. Do not stop, and do not ask questions — there is no human to answer.
 - Produce natural-language text only when the task is fully complete and no further tool call applies; that final text is the answer returned to the caller.
+- When you do give that final answer, output only the answer itself — no preamble ("All right…", "Here's a summary…", "Let me…"), no sign-off, and no "let's close the loop."
 
 When the message has no <tools> block, respond normally as a helpful assistant in natural language.`;
 }

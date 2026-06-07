@@ -160,9 +160,9 @@ export async function handleChatCompletion(
   const completionId = `chatcmpl-${crypto.randomUUID()}`;
   const created = Math.floor(Date.now() / 1000);
 
-  // Run with retry on rate limit (empty response). Buffers the full response.
-  const MAX_RETRIES = 3;
-  const RETRY_DELAY_MS = 10_000;
+  // Buffer the full response, with a couple of quick retries on an empty reply.
+  const MAX_RETRIES = 2;
+  const SHORT_RETRY_DELAY_MS = 2_000;
 
   async function runBuffered(): Promise<{ fullText: string } | { error: Response }> {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -187,17 +187,24 @@ export async function handleChatCompletion(
         return { fullText };
       }
 
-      // Rate limited — sleep and retry
+      // Empty response. Only an at-limit throttle warrants treating this as rate
+      // limiting; otherwise it's a different failure (content filter, an invalid
+      // agent/session, a transient upstream error) where a long escalating
+      // backoff is futile and reads as a silent hang. Fail fast after a couple of
+      // quick retries instead.
+      const t = copilotStream.throttle;
+      if (t && t.current >= t.max) {
+        return { error: rateLimitResponse(t) };
+      }
       if (attempt < MAX_RETRIES) {
-        const delay = RETRY_DELAY_MS * (attempt + 1);
-        log.info(`Rate limited, retrying in ${delay / 1000}s (attempt ${attempt + 1}/${MAX_RETRIES})`);
-        await new Promise(r => setTimeout(r, delay));
+        log.info(`Empty upstream response, quick retry in ${SHORT_RETRY_DELAY_MS / 1000}s (attempt ${attempt + 1}/${MAX_RETRIES})`);
+        await new Promise(r => setTimeout(r, SHORT_RETRY_DELAY_MS));
         text = "Please continue."; // M365 already has context
       } else {
-        return { error: rateLimitResponse(copilotStream.throttle) };
+        return { error: emptyResponseResponse(t) };
       }
     }
-    return { error: rateLimitResponse(null) };
+    return { error: emptyResponseResponse(null) };
   }
 
   // When tools are present, buffer full response to detect tool calls
@@ -251,6 +258,17 @@ export async function handleChatCompletion(
 
       if (realToolCalls.length > 0) {
         parsed.toolCalls = realToolCalls;
+      }
+
+      // Enforce one tool call per turn unless explicitly opted out. M365 — the
+      // reasoning tones especially — batches its whole plan into a single
+      // response. Executing a batch runs later steps on guessed state and lets a
+      // premature success claim ride along at the end. Keeping only the first
+      // call forces a real step-by-step loop where each call reacts to the
+      // previous tool_response. Set M365_ALLOW_MULTI_TOOL to restore batching.
+      if (!process.env.M365_ALLOW_MULTI_TOOL && parsed.toolCalls.length > 1) {
+        log.info(`One-call-per-turn: keeping ${parsed.toolCalls[0].function.name}, dropping ${parsed.toolCalls.length - 1} batched call(s)`);
+        parsed.toolCalls = [parsed.toolCalls[0]];
       }
     }
 
@@ -326,6 +344,19 @@ function rateLimitMessage(throttle: { current: number; max: number } | null): st
 
 function rateLimitResponse(throttle: { current: number; max: number } | null): Response {
   return jsonResponse(429, { error: { message: rateLimitMessage(throttle), type: "rate_limit_error" } });
+}
+
+/** Empty upstream reply that is NOT an at-limit throttle — a distinct failure
+ *  (content filter, invalid agent/session, transient error) we surface clearly
+ *  instead of hanging on a long retry loop. */
+function emptyResponseResponse(throttle: { current: number; max: number } | null): Response {
+  const detail = throttle ? ` (throttle ${throttle.current}/${throttle.max})` : "";
+  return jsonResponse(502, {
+    error: {
+      message: `M365 Copilot returned an empty response${detail} — likely a content filter, an invalid agent/session, or a transient upstream error.`,
+      type: "upstream_empty_response",
+    },
+  });
 }
 
 function streamToolCalls(

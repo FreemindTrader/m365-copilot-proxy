@@ -102,6 +102,7 @@ STRICT RULES:
 - Do not defer work or promise future results ("I'll do this next…").
 - Do not ask the user questions unless tool execution is impossible.
 - Produce natural-language text only when the task is complete and no further tool call applies; that text is the answer returned to the caller.
+- When you do give that final answer, output only the answer itself — no preamble ("All right…", "Here's a summary…", "Let me…"), no sign-off, and no "let's close the loop."
 
 <tools>
 ${defs}
@@ -124,6 +125,48 @@ export function getMessageContent(msg: Message): string {
   return msg.content.map((p) => p.text || "").join("");
 }
 
+/**
+ * A few-shot that demonstrates the sustained one-call-per-turn loop — act, wait
+ * for the REAL result, act again using it, then a terse preamble-free answer.
+ * Built from the CLIENT'S ACTUAL tools so the model never sees a phantom tool:
+ * a hard-coded `read_file` (absent from pi's `read`/`bash`/`edit`/`write` set)
+ * derailed reasoning models into critiquing the example instead of acting. Uses
+ * concrete values, never `…`/`<placeholder>` (reasoning models echo those).
+ */
+function fewShotExample(tools: ToolDef[]): string[] {
+  const find = (re: RegExp) => tools.find((t) => re.test(t.function.name));
+  const firstKey = (t: ToolDef, fallback: string) =>
+    t.function.parameters?.required?.[0] ??
+    Object.keys(t.function.parameters?.properties ?? {})[0] ??
+    fallback;
+
+  const act = find(/bash|shell|run|exec|command|terminal/i) ?? find(/write|edit|create/i);
+  const read = find(/read|cat|view|open|show|get|fetch|file/i);
+
+  if (act && read && act !== read) {
+    const ak = firstKey(act, "command");
+    const rk = firstKey(read, "path");
+    return [
+      `<user>\nAppend "build: ok" to /tmp/status and confirm it's there.\n</user>`,
+      `<assistant>\n{"tool": "${act.function.name}", "arguments": {"${ak}": "echo 'build: ok' >> /tmp/status"}}\n</assistant>`,
+      `<tool_response name="${act.function.name}" call_id="ex1">\n</tool_response>`,
+      `<assistant>\n{"tool": "${read.function.name}", "arguments": {"${rk}": "/tmp/status"}}\n</assistant>`,
+      `<tool_response name="${read.function.name}" call_id="ex2">\nbuild: ok\n</tool_response>`,
+      `<assistant>\nConfirmed — /tmp/status contains "build: ok".\n</assistant>`,
+    ];
+  }
+
+  // Single-tool fallback: one clean real call against a concrete input.
+  const t = read ?? act ?? tools[0];
+  const k = firstKey(t, "path");
+  return [
+    `<user>\nWhat's the hostname of this machine?\n</user>`,
+    `<assistant>\n{"tool": "${t.function.name}", "arguments": {"${k}": "/etc/hostname"}}\n</assistant>`,
+    `<tool_response name="${t.function.name}" call_id="ex1">\nweb-prod-01\n</tool_response>`,
+    `<assistant>\nThe hostname is web-prod-01.\n</assistant>`,
+  ];
+}
+
 export function formatMessages(
   messages: Message[],
   tools?: ToolDef[],
@@ -139,12 +182,9 @@ export function formatMessages(
   if (tools && tools.length > 0 && toolChoice !== "none") {
     parts.push(`<system>\n${formatToolDefinitions(tools)}${formatToolChoiceInstruction(toolChoice)}\n</system>`);
 
-    // Few-shot: demonstrate the act-then-use-the-real-result loop. Deliberately
-    // no chit-chat example here — that taught M365 to answer in prose.
-    parts.push(`<user>\nShow me the contents of /etc/hostname\n</user>`);
-    parts.push(`<assistant>\n{"tool": "read_file", "arguments": {"path": "/etc/hostname"}}\n</assistant>`);
-    parts.push(`<tool_response name="read_file" call_id="ex1">\nmy-server\n</tool_response>`);
-    parts.push(`<assistant>\nThe hostname is my-server.\n</assistant>`);
+    // Few-shot built from the client's real tools (see fewShotExample). No
+    // chit-chat example (taught prose answers), no batching (taught plan-dumps).
+    parts.push(...fewShotExample(tools));
   }
 
   for (const m of messages) {

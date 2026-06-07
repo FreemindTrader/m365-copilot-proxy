@@ -39,9 +39,11 @@ The contract is enforced at three layers:
 ### 1. System Prompt (packages/core/src/tools.ts)
 
 `formatToolDefinitions()` injects strict rules into every tool-enabled request:
-- "TOOL USE IS REQUIRED when..."
-- "Output ONLY a single JSON tool call. No other text."
-- "Never describe your intent."
+- "Performing the task with tools is your **PRIMARY JOB**. Answering the user in prose is, and always will be, SECONDARY."
+- "Output ONLY a single JSON tool call. No other text." — and **no JSON keys other than `tool`/`arguments`** (M365 invents `{"confidence":N}` and `{"final":…}`).
+- "Never describe your intent" and **never emit filler/acknowledgements** ("You're absolutely right", "Good, that's fixable").
+- "**Never claim success** (`✅`/`SUCCESS`/`Done`) unless a `<tool_response>` proving it already appears above" — M365 loves to declare victory before the build runs.
+- "When you do give the final answer, **no preamble/sign-off**" ("All right…", "let's close the loop").
 
 ### 2. Copilot Studio Agent System Prompt (packages/core/src/agent.ts)
 
@@ -58,21 +60,21 @@ the stale ones. Hosts sharing a tenant compute the same name for the same instru
 converge on one agent with no coordination. Set `M365_AGENT_NO_CLEANUP` to keep old
 versions around (e.g. while several hosts on different versions share a tenant).
 
-### 3. Fail-Closed Parsing (packages/proxy-lib/src/handler.ts)
+### 3. Fail-Closed Parsing & Output Hardening (packages/proxy-lib/src/handler.ts, tools.ts)
 
-When `parseToolCalls()` detects both tool calls AND extra text content:
-- The text is **stripped** before returning the response to the client.
-- The client receives only `tool_calls` with `content: null`.
-- The stripped text is logged for debugging.
+The model's output is scrubbed regardless of whether it obeyed the prompt — this is the durable lever, since M365's chat-RLHF leaks through no matter how the prompt is tuned:
 
-This means even if the model drifts and starts adding explanations alongside tool calls, downstream clients always receive clean tool-call-only responses.
+- **Mixed output:** when `parseToolCalls()` finds tool calls AND extra text, the text is **stripped**; the client gets only `tool_calls` with `content: null` (the stripped text is logged).
+- **Invented JSON:** `parseToolCalls()` removes `{"confidence":N}` everywhere, **drops** a `{"final":…}` riding alongside tool calls (a premature success claim), and **unwraps** a lone `{"final":"…"}` into plain text.
+- **One call per turn:** the handler keeps only the **first** tool call and discards the rest. M365 (esp. reasoning tones) batches its whole plan into one response, which runs later steps on guessed state and lets a `✅ SUCCESS` ride along at the end; forcing one call makes each step react to the real previous `<tool_response>`. Override with `M365_ALLOW_MULTI_TOOL`.
+- **Empty ≠ rate limit:** an empty upstream reply is only treated as throttling when the throttle is **at-limit**; otherwise (content filter, invalid/deleted agent, transient) it fails fast after a couple of quick retries instead of a 60s escalating loop that reads as a silent hang.
 
 ## Few-Shot Examples
 
-The first turn includes few-shot examples in `formatMessages()` that demonstrate the correct pattern to M365 Copilot:
+`fewShotExample()` builds the first-turn examples **from the client's real tools** (never a hard-coded `read_file` that may not exist — reasoning models derailed into critiquing that mismatch). It demonstrates the sustained one-call-per-turn loop with concrete values:
 
-1. User asks to read a file -> Assistant outputs only the tool call JSON
-2. Tool response is returned -> Assistant summarizes the result
-3. User asks a non-tool question -> Assistant responds with plain text
+1. Act with a real tool (e.g. `bash`) → wait for the real `<tool_response>`
+2. Act again using that result (e.g. `read`) → wait for the result
+3. Give a terse, **preamble-free** final answer
 
-These examples override M365 Copilot's default behavior of describing actions instead of taking them.
+Deliberately **no** chit-chat example (it taught prose answers) and **no** batching (it taught plan-dumps). This overrides M365 Copilot's default behavior of describing actions instead of taking them.

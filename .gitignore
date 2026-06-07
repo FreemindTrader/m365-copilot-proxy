@@ -9,3 +9,5 @@ secrets.json
 .env
 result
 result-*
+debug.log
+scripts/studio-dig-out/

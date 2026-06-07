@@ -175,6 +175,8 @@ There is no `model` parameter. The `tone` string on the chat message picks the m
 
 Mapping lives in `MODEL_TONES` (`copilot.ts`). `*_Reasoning` tones take 10–30s. New tones appear over time; they're guessable by pattern (`Gpt_5_N_{Quick,Reasoning}`).
 
+> ⚠️ **Reasoning tones break with our agent.** `tone` is a chat-layer setting; our Copilot Studio agent (§10) is a declarative agent. Combining a declarative agent with a `*_Reasoning` tone is an unsupported pairing: the reasoning pipeline (`DeepLeo`) treats the injected prompt as material to *analyze* rather than instructions to obey, and disengages from tool use. Only the default `magic` and the `*_Quick` tones behave with the agent. See §10 → *Agent types*.
+
 ---
 
 ## 6. Receiving a response
@@ -280,8 +282,37 @@ Instead of `plugins`, set on the chat message:
            "clientOverrides": { "capabilities": [], "deepResearchModels@odata.type": "Collection(String)" } }]
 ```
 
-### ⚠️ Known dead code / footgun
-`getOrCreateAgent()` finds an existing agent by name and **only republishes it** — `updateBotInstructions()` is defined but **never called**. So **editing `getAgentInstructions()` has no effect on an already-created agent.** To change the server-side prompt you must delete + recreate the bot (or wire up the update path).
+### Versioning the agent by instructions hash
+The agent's instructions are **baked in at create time** and can't be cheaply updated in place (the update API needs a `changeToken` only returned by *create*; `updateBotInstructions()` is dead code). So instead of editing in place, the agent is **versioned by name**:
+
+- Name = `m365-tool-agent-<hash>`, where `<hash>` = first 8 hex of `sha256(getAgentInstructions())`.
+- `getOrCreateAgent()` computes the wanted name, looks for it via `listBots`, and **creates a fresh agent** if absent (instructions are baked into `createBot`). The local cache (`agent-id.json`) stores `instructionsHash`; a mismatch forces a rebuild.
+- A **cleanup pass** deletes stale `m365-tool-agent-*` bots (and the legacy unversioned `m365-tool-agent`). Disable with `M365_AGENT_NO_CLEANUP`.
+- Hosts sharing a tenant compute the **same name for the same instructions**, so they converge on one agent with no coordination.
+- **Empirically verified:** Copilot Studio reflects the `displayName` we set → `shortBotName` **byte-for-byte** (hyphens, length, case all preserved), which is what makes name-based lookup reliable.
+
+> ⚠️ Multi-host footgun: editing the instructions changes the hash → a host on the new build creates the new agent and its cleanup **deletes the old one out from under hosts still running the old build mid-conversation** → they get empty replies (looks like a hang). Deploy hosts together, or set `M365_AGENT_NO_CLEANUP` during a staggered rollout.
+
+### Agent types: declarative (`minimalBots`) vs Studio/Dataverse — and why you can't bind a model
+A natural idea is "give each model its own agent with the right system prompt." **You can't, with our agent type.** Reverse-engineering the real Copilot Studio UI (drive it with Playwright, capture its network — see `scripts/studio-dig.mjs`) shows there are **two different species of agent**:
+
+| | **Declarative agent (ours)** | **Studio / PVA bot** |
+|---|---|---|
+| Created via | `copilotstudio/minimalBots/api` | Dataverse + `powervirtualagents/bots/<id>/api/botcomponents` |
+| Stored in | M365/MOS3 declarative-agent layer | **Dataverse** (`<org>.crm4.dynamics.com/api/data/v9.2/bots`) |
+| Plugs into BizChat | ✅ (this is the whole point) | ❓ (untested) |
+| Has a **model field** | ❌ none (only `aISettings.useModelKnowledge` + `gptCapabilities`) | likely (the Studio "model picker" targets these) |
+| Shows in `bots` Dataverse table | ❌ (table is **empty** for us) | ✅ |
+
+Evidence (`scripts/dataverse-bot-probe.mjs`, with a `<org>.crm4.dynamics.com/.default` token):
+- `GET bots(<ourBotId>)` → **404, "Entity 'bot' Does Not Exist"**.
+- Listing **all** Dataverse `bots` → **0 rows**. Our `minimalBots` agents simply aren't Dataverse bots.
+- Copilot Studio *does* ship an agent-model feature — its ECS config (`ecs.office.com/config/v1/CopilotStudio`) exposes `displayModelPicker=true`, `AgentModelSelectionV2`, `isReasoningCardEnabled=true`, even `cuaAnthropicModels` with `modelHint: "sonnet4-6"/"opus4-6"`. But that picker operates on **full Studio/Dataverse bots**, which we neither have nor create.
+- `msdyn_aimodels` exists but is **AI Builder** (invoice/receipt/sentiment/OCR models), unrelated to the Copilot chat LLM.
+
+**Conclusion:** our declarative agent has **no model knob**. The model is *only* the BizChat chat-layer `tone` (§5). Pairing our declarative agent with a non-default **reasoning** tone is an **unsupported combination** — the reasoning pipeline (`contentOrigin: "DeepLeo"`) meta-reasons over the injected prompt instead of obeying it (it will literally critique your few-shot, echo the `{"tool":"<tool_name>"}` template verbatim, and reason itself *out* of using tools). The agent is still attached (`threadLevelGptId` rides along, response is tagged `3PDeclarativeAgent`) — it just loses its grip under a reasoning tone.
+
+**Open frontier:** create a *full* Studio/Dataverse PVA bot (which *can* bind a model) and test whether it's reachable over the same BizChat WS. Different APIs (Dataverse write + PVA `botcomponents` + a different publish path) and unknown BizChat compatibility — filed as the next experiment, not yet done.
 
 ---
 
@@ -301,6 +332,11 @@ Instead of `plugins`, set on the chat message:
 | 10 | Power Platform env host needs last-2-chars trimmed to resolve DNS | `getEnvironmentUrl()` |
 | 11 | 600 messages **per conversation**; reuse + delta to conserve | §7/§8 |
 | 12 | Only bot messages **without** `messageType` are real content | `handleMsg()` |
+| 13 | **Reasoning tones** (`*_Reasoning`/`DeepLeo`) meta-analyze the prompt and disengage; only `magic` + `*_Quick` work with the agent | §5/§10 |
+| 14 | Our `minimalBots` agents are **not** Dataverse bots (that table is empty) and have **no model field** — can't bind a model | §10 |
+| 15 | Agent is **versioned by name** (`m365-tool-agent-<sha256-prefix>`); editing instructions auto-provisions a new one + cleans up old | §10 |
+| 16 | Empty reply ≠ rate limit unless throttle is at-limit; otherwise fail fast (don't burn 60s of retries) | `handler.ts` |
+| 17 | M365 invents `{"confidence":N}` / `{"final":"…"}` JSON and batches calls + premature `✅ SUCCESS`; proxy strips them + enforces one call/turn | `tools.ts`/`handler.ts` |
 
 ---
 
@@ -314,8 +350,20 @@ Instead of `plugins`, set on the chat message:
 | `packages/core/src/model.ts` | `ModelSession` — auth + agent + conversation continuity, string-in/stream-out |
 | `packages/core/src/agent.ts` | Copilot Studio agent create/publish, BAP env discovery |
 | `packages/core/src/schemas.ts` | Zod schemas for SignalR frames & JWT claims |
-| `packages/proxy-lib/src/handler.ts` | OpenAI ↔ M365 translation, `SessionPool`, delta mode, tool-call parsing, retries |
-| `packages/core/src/tools.ts` | Tool-definition formatting + `parseToolCalls` (bare + fenced) |
+| `packages/proxy-lib/src/handler.ts` | OpenAI ↔ M365 translation, `SessionPool`, delta mode, tool-call parsing, one-call-per-turn, empty-response fail-fast |
+| `packages/core/src/tools.ts` | Tool-definition prompt, real-tool few-shot, `parseToolCalls` (bare + fenced, strips `confidence`/`final`) |
+
+### Reverse-engineering probe scripts (`scripts/`, read-only)
+
+| Script | What it digs |
+|---|---|
+| `listbots-probe.mjs` | Dumps `minimalBots` list — shows `displayName`→`shortBotName` round-trip, existing agents |
+| `agent-model-probe.mjs` | Full `minimalBots` agent definition; hunts for a model field (there is none) |
+| `studio-dig.mjs` | Logs into the real Copilot Studio UI (Playwright + TOTP) and **captures every API call** → revealed Dataverse + PVA + ECS layers |
+| `dataverse-bot-probe.mjs` | Queries Dataverse (`<org>.crm4.dynamics.com`) directly — proved our agents aren't Dataverse bots |
+| `proxy-verify.mjs` | End-to-end proxy check (`--agent --multiturn --manytools`) — reproduces disengagement, verifies the tool loop |
+
+Run unsandboxed with `CHROMIUM_PATH` set and `M365_NO_INTERACTIVE=1`. They reuse the stored MSAL cache / automated login. Output (screenshots, captured network) lands in `scripts/studio-dig-out/` (gitignored).
 
 ---
 
