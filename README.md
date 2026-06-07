@@ -135,6 +135,43 @@ pnpm run dev
 
 Then point any OpenAI-compatible client at `http://localhost:4141/v1`.
 
+### 6. Run on NixOS (systemd service)
+
+The proxy is a [Nitro](https://nitro.build/) service. The flake exposes a package
+(built from the workspace via [pnpm2nix](https://github.com/cramt/pnpm2nix)) and a NixOS
+module:
+
+```nix
+# flake.nix
+{
+  inputs.m365.url = "github:cramt/m365-copilot-proxy";
+
+  outputs = { nixpkgs, m365, ... }: {
+    nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
+      modules = [
+        m365.nixosModules.default
+        {
+          services.m365-copilot-proxy = {
+            enable = true;
+            # JSON with { email, password, mfaSecret } — kept out of the Nix store,
+            # delivered via systemd LoadCredential. Manage with sops-nix/agenix.
+            secretsFile = "/run/secrets/m365-copilot.json";
+            # port = 4141;          # default
+            # host = "127.0.0.1";   # default — do not expose; unauthenticated, paid account
+            # openFirewall = false;
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+The service runs as a hardened `DynamicUser` unit. Auth state (`msal-cache.json`,
+`agent-id.json`) persists in `/var/lib/m365-copilot-proxy`; a fresh deploy self-bootstraps
+via headless login using `secretsFile` + the bundled Chromium. To run the package directly
+without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
+
 ## Available models
 
 | Model ID | M365 Tone | Description |

@@ -1,13 +1,17 @@
 {
-  description = "opencode-m365 dev shell";
+  description = "m365-copilot-proxy — OpenAI-compatible proxy for M365 Copilot (dev shell, package, NixOS module)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    pnpm2nix = {
+      url = "github:cramt/pnpm2nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { nixpkgs, flake-utils, ... }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs = { self, nixpkgs, flake-utils, pnpm2nix, ... }:
+    (flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
@@ -55,9 +59,47 @@
           npmInstallFlags = [ "--omit=dev" ];
           npmDepsHash = "sha256-ZR1dJcf5fAMK+7jtT0aDwNYYRaS0Pye1fLkUxVHtO+Y=";
         };
+
+        # Build the Nitro proxy from the pnpm workspace. mkPnpmWorkspace assembles
+        # node_modules from pre-fetched tarballs (no `pnpm install`), so Playwright's
+        # browser-download postinstall never runs. preBuildPackages builds core +
+        # proxy-lib (tsdown → dist/) before the proxy's `nitro build`.
+        ws = pnpm2nix.lib.${system}.mkPnpmWorkspace {
+          workspace = ./.;
+          nodejs = pkgs.nodejs;
+          packages = [ "packages/core" "packages/proxy-lib" ];
+          apps = [{
+            name = "m365-copilot-proxy";
+            path = "packages/proxy";
+            version = "0.2.0";
+            script = "build"; # nitro build
+            distDir = ".output"; # $out = contents of packages/proxy/.output
+            preBuildPackages = [ "packages/core" "packages/proxy-lib" ];
+          }];
+        };
+
+        # The raw Nitro output: $out/server/index.mjs, $out/server/node_modules, $out/public.
+        m365-proxy-unwrapped = ws.apps.m365-copilot-proxy;
+
+        # Runnable wrapper: defaults CHROMIUM_PATH to a bundled Chromium (Playwright's
+        # bundled browser is broken on NixOS) and forwards PORT/HOST/HOME. Gives a
+        # working `nix run .#` and is what the NixOS module execs.
+        m365-proxy = pkgs.writeShellApplication {
+          name = "m365-copilot-proxy";
+          runtimeInputs = [ pkgs.nodejs ];
+          text = ''
+            export CHROMIUM_PATH="''${CHROMIUM_PATH:-${pkgs.chromium}/bin/chromium}"
+            exec node ${m365-proxy-unwrapped}/server/index.mjs "$@"
+          '';
+        };
       in
       {
-        packages.pi = pi;
+        packages = {
+          inherit pi;
+          m365-copilot-proxy-unwrapped = m365-proxy-unwrapped;
+          m365-copilot-proxy = m365-proxy;
+          default = m365-proxy;
+        };
 
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
@@ -72,5 +114,7 @@
           '';
         };
       }
-    );
+    )) // {
+      nixosModules.default = import ./nix/module.nix self;
+    };
 }
