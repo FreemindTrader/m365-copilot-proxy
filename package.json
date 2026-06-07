@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "pnpm --filter @m365-copilot/proxy dev",
     "build": "pnpm -r build",
-    "proxy": "node packages/proxy/dist/server.mjs",
+    "proxy": "node packages/proxy/bin/m365-proxy.mjs",
     "test": "pnpm test:unit",
     "test:unit": "pnpm build && npx vitest run",
     "test:live": "pnpm build && M365_LIVE=1 npx vitest run"

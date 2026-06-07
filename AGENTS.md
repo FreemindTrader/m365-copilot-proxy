@@ -18,8 +18,8 @@ of truth; keep it in sync if you change protocol behaviour.
 | Package | Role |
 |---|---|
 | `@m365-copilot/core` | auth (MSAL+Playwright), WebSocket client, sessions, agent mgmt, tool formatting, schemas |
-| `@m365-copilot/proxy-lib` | OpenAI↔M365 translation: Hono app, `SessionPool`, handler, tool-call parsing |
-| `@m365-copilot/proxy` | standalone HTTP proxy binary (`m365-proxy`) |
+| `@m365-copilot/proxy-lib` | OpenAI↔M365 translation: framework-free `createApp()` fetch handler, `SessionPool`, handler, tool-call parsing |
+| `@m365-copilot/proxy` | standalone **Nitro** service / proxy binary (`m365-proxy`); file-based `routes/`, startup-auth `plugins/`, builds to `.output/` |
 | `@m365-copilot/openclaw-plugin` | OpenClaw config generator + setup CLI |
 
 `scripts/` holds dev/diagnostic tools (`login-probe`, `proxy-verify`, `toolformat-experiment`).

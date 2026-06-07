@@ -23,9 +23,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@hono/node-server": "^1.19.12",
     "@m365-copilot/core": "workspace:*",
-    "@m365-copilot/proxy-lib": "workspace:*"
+    "@m365-copilot/proxy-lib": "workspace:*",
+    "srvx": "^0.8.0"
   },
   "publishConfig": {
     "access": "public"

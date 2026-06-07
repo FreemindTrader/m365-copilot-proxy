@@ -3,30 +3,24 @@
   "version": "0.2.0",
   "type": "module",
   "bin": {
-    "m365-proxy": "./dist/server.mjs"
+    "m365-proxy": "./bin/m365-proxy.mjs"
   },
-  "exports": {
-    ".": {
-      "import": "./dist/server.mjs",
-      "types": "./dist/server.d.mts"
-    }
-  },
-  "main": "./dist/server.mjs",
-  "types": "./dist/server.d.mts",
   "files": [
-    "dist"
+    ".output",
+    "bin"
   ],
   "scripts": {
-    "dev": "tsx src/server.ts",
-    "build": "tsdown src/server.ts --format esm --dts"
+    "dev": "nitro dev --port 4141",
+    "build": "nitro build",
+    "prepare": "nitro prepare"
   },
   "dependencies": {
-    "@hono/node-server": "^1.19.12",
     "@m365-copilot/core": "workspace:*",
     "@m365-copilot/proxy-lib": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.0.0",
+    "nitropack": "^2.10.4"
   },
   "publishConfig": {
     "access": "public"

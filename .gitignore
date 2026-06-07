@@ -1,5 +1,7 @@
 node_modules
 dist
+.output
+.nitro
 token.txt
 msal-cache.json
 secrets.json

@@ -1,6 +1,6 @@
 import { getToken, getAvailableModels, createLogger } from "@m365-copilot/core";
 import { createApp } from "@m365-copilot/proxy-lib";
-import { serve } from "@hono/node-server";
+import { serve } from "srvx";
 
 const log = createLogger("openclaw-plugin");
 
@@ -125,10 +125,9 @@ export async function startForOpenClaw(options: { port?: number } = {}): Promise
   const port = options.port ?? 4141;
 
   // Bind and resolve the *actual* port (port 0 picks a free one).
-  let server: ReturnType<typeof serve>;
-  const actualPort = await new Promise<number>((resolve) => {
-    server = serve({ fetch: app.fetch, port }, (info) => resolve(info.port));
-  });
+  const server = serve({ fetch: app.fetch, port, hostname: "localhost", silent: true });
+  await server.ready();
+  const actualPort = server.url ? Number(new URL(server.url).port) : port;
 
   const config = generateOpenClawConfig(actualPort);
   log.info(`Proxy started on port ${actualPort}`);
@@ -136,7 +135,9 @@ export async function startForOpenClaw(options: { port?: number } = {}): Promise
   return {
     proxy: {
       port: actualPort,
-      close: () => server.close(),
+      close: () => {
+        void server.close();
+      },
     },
     config,
   };
