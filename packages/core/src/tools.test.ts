@@ -94,6 +94,32 @@ describe("parseToolCalls", () => {
     expect(result.toolCalls).toHaveLength(0);
     expect(result.textContent).toBe(input);
   });
+
+  it("strips invented {confidence} objects so junk-only leftover isn't mixed output", () => {
+    const input = '{"tool": "bash", "arguments": {"command": "ls"}}{"confidence": 0.57}';
+    const result = parseToolCalls(input);
+
+    expect(result.hasToolCalls).toBe(true);
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.textContent).toBeNull();
+  });
+
+  it("drops a premature {final} success claim emitted alongside a tool call", () => {
+    const input = '{"tool": "bash", "arguments": {"command": "nix build"}}{"final": "✅ SUCCESS\\nThe build passed."}';
+    const result = parseToolCalls(input);
+
+    expect(result.hasToolCalls).toBe(true);
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.textContent).toBeNull();
+  });
+
+  it("unwraps a lone {final} answer into plain text", () => {
+    const input = '{"final": "All done — the package builds."}';
+    const result = parseToolCalls(input);
+
+    expect(result.hasToolCalls).toBe(false);
+    expect(result.textContent).toBe("All done — the package builds.");
+  });
 });
 
 describe("formatToolDefinitions", () => {
@@ -120,6 +146,15 @@ describe("formatToolDefinitions", () => {
     expect(output).toContain("Never describe your intent");
     expect(output).toContain("Do not ask the user questions unless tool execution is impossible");
     expect(output).toContain("Do not defer work");
+  });
+
+  it("should make tools primary and forbid hallucinated success / invented keys", () => {
+    const output = formatToolDefinitions(tools);
+
+    expect(output).toContain("PRIMARY JOB");
+    expect(output).toContain("SECONDARY");
+    expect(output).toContain('no JSON keys other than "tool" and "arguments"');
+    expect(output).toContain("SUCCESS");
   });
 
   it("should include tool definitions", () => {

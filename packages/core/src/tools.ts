@@ -46,6 +46,29 @@ const TOOL_CALL_REGEX = /\{\s*"tool"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[\s
 // Legacy fence format — still supported for parsing
 const FENCED_TOOL_CALL_REGEX = /```tool_call\s*\n(\{[\s\S]*?\})\s*\n\s*```/g;
 
+// M365 invents bookkeeping objects ({"confidence": 0.5}) and wraps its answer in
+// {"final": "..."} — neither is a real tool call. Strip confidence everywhere;
+// drop final when it rides alongside tool calls (it's usually a premature
+// success claim), and unwrap it when it stands alone as the response.
+const CONFIDENCE_REGEX = /\{\s*"confidence"\s*:\s*-?[0-9.]+\s*\}/g;
+const FINAL_OBJECT_REGEX = /\{\s*"final"\s*:\s*"(?:[^"\\]|\\.)*"\s*\}/g;
+
+/** Strip invented confidence/final objects from a no-tool-call response and
+ *  unwrap a lone {"final": "..."} answer into bare text. Returns null if empty. */
+function cleanLooseText(text: string): string | null {
+  let out = text;
+  for (const m of out.match(FINAL_OBJECT_REGEX) ?? []) {
+    try {
+      const value = JSON.parse(m).final;
+      if (typeof value === "string") out = out.replace(m, value);
+    } catch {
+      // leave the literal text in place if it isn't valid JSON
+    }
+  }
+  out = out.replace(CONFIDENCE_REGEX, "").trim();
+  return out.length ? out : null;
+}
+
 // --- Formatting ---
 
 export function formatToolDefinitions(tools: ToolDef[]): string {
@@ -61,17 +84,20 @@ export function formatToolDefinitions(tools: ToolDef[]): string {
 
   return `You are the execution core of an automated agent, not a chat assistant. Your output is parsed by a program — a real runtime that executes your tool calls against a live system and returns the actual results to you in <tool_response> blocks.
 
+Performing the task with tools is your PRIMARY JOB. Answering the user in prose is, and always will be, SECONDARY — you write prose only when the task is fully done or no tool can make progress. Default to acting, not talking.
+
 TOOL USE IS REQUIRED when the user asks you to read files, run commands, inspect the repository, fetch data, or perform any action a tool can accomplish. The tools are real: they read real files, run real commands, and change real state. Never answer from memory or simulate a result when a tool can provide it.
 
 When calling a tool, output ONLY a single JSON tool call. No other text:
 {"tool": "<tool_name>", "arguments": { ... }}
 
 STRICT RULES:
-- Output ONLY the JSON object when calling a tool. No markdown, no code fences, no explanation, no surrounding text.
-- Never describe your intent ("I'll read the file…", "Let me check…"). Just call the tool.
-- One tool call per response. Never combine a tool call with explanatory text.
+- Output ONLY the JSON object when calling a tool. No markdown, no code fences, no explanation, no surrounding text, and no JSON keys other than "tool" and "arguments" (never "confidence", "final", "thoughts", etc.).
+- Never describe your intent ("I'll read the file…", "Let me check…") and never emit filler or acknowledgements ("Good, that's fixable", "You're absolutely right", "This one:"). Each turn is exactly one tool call OR the final answer — nothing in between.
+- One tool call per response, then stop and wait for its <tool_response>. Never batch multiple calls in one response.
 - Tool names and argument keys must match exactly as defined below.
 - A <tool_response> is the real result from the live system — treat it as ground truth, never invent or assume results.
+- NEVER claim you have done something — read a file, run a command, written code, built, or succeeded — unless a <tool_response> proving it already appears above. Never output "✅", "SUCCESS", "Done", or a summary of results you have not actually received yet.
 - If a tool call fails or returns partial data, immediately call another tool to resolve it. Do not give up.
 - Do not defer work or promise future results ("I'll do this next…").
 - Do not ask the user questions unless tool execution is impossible.
@@ -113,13 +139,12 @@ export function formatMessages(
   if (tools && tools.length > 0 && toolChoice !== "none") {
     parts.push(`<system>\n${formatToolDefinitions(tools)}${formatToolChoiceInstruction(toolChoice)}\n</system>`);
 
-    // Few-shot examples to override M365 Copilot's built-in behavior
+    // Few-shot: demonstrate the act-then-use-the-real-result loop. Deliberately
+    // no chit-chat example here — that taught M365 to answer in prose.
     parts.push(`<user>\nShow me the contents of /etc/hostname\n</user>`);
     parts.push(`<assistant>\n{"tool": "read_file", "arguments": {"path": "/etc/hostname"}}\n</assistant>`);
     parts.push(`<tool_response name="read_file" call_id="ex1">\nmy-server\n</tool_response>`);
     parts.push(`<assistant>\nThe hostname is my-server.\n</assistant>`);
-    parts.push(`<user>\nWhat is 2+2?\n</user>`);
-    parts.push(`<assistant>\n4\n</assistant>`);
   }
 
   for (const m of messages) {
@@ -212,16 +237,20 @@ export function parseToolCalls(text: string): ParseResult {
   }
 
   if (toolCalls.length === 0) {
-    return { hasToolCalls: false, toolCalls: [], textContent: text };
+    return { hasToolCalls: false, toolCalls: [], textContent: cleanLooseText(text) };
   }
 
   // Strip matched tool calls from text to get remaining content.
   // M365 is a markdown model and often wraps the JSON in a ```json / ```tool_call
   // fence even when told not to; remove the now-empty fence markers it leaves
-  // behind so they aren't mistaken for real assistant prose.
+  // behind so they aren't mistaken for real assistant prose. Also drop the
+  // invented confidence/final objects so a premature "✅ SUCCESS" never reaches
+  // the client and a junk-only leftover isn't flagged as mixed output.
   let remaining = text
     .replace(jsonRegex, "")
     .replace(new RegExp(FENCED_TOOL_CALL_REGEX.source, "g"), "")
+    .replace(CONFIDENCE_REGEX, "")
+    .replace(FINAL_OBJECT_REGEX, "")
     .replace(/```(?:json|tool_call)?\s*```/g, "") // empty fence pair
     .replace(/```(?:json|tool_call)?/g, "") // dangling opening/closing fence
     .trim();
