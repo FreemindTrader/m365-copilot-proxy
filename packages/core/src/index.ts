@@ -41,4 +41,4 @@ export {
   type ParseResult,
 } from "./tools.js";
 
-export { createLogger, LOG_PATH } from "./log.js";
+export { createLogger, trunc, LOG_PATH } from "./log.js";

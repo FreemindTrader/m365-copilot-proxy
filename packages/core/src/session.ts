@@ -8,7 +8,7 @@ import {
   CloseFrame,
 } from "./schemas.js";
 import { decodeJwt, getToneForModel, type CopilotStream } from "./copilot.js";
-import { createLogger } from "./log.js";
+import { createLogger, trunc } from "./log.js";
 
 const RS = "\x1E";
 const log = createLogger("session");
@@ -97,7 +97,7 @@ export class CopilotSession {
     const isFirst = this._turnCount === 0;
     this._turnCount++;
 
-    log.info(`Chat turn ${this._turnCount - 1}: model=${model}, isFirst=${isFirst}, text=${JSON.stringify(text.slice(0, 200))}`);
+    log.info(`Chat turn ${this._turnCount - 1}: model=${model}, isFirst=${isFirst}, text=${JSON.stringify(trunc(text, 200))}`);
 
     const claims = decodeJwt(token);
     const requestId = crypto.randomUUID();
@@ -215,7 +215,7 @@ export class CopilotSession {
 
       ws.on("message", (data: WebSocket.RawData) => {
         const raw = data.toString();
-        log.debug("WS recv:", raw.slice(0, 500));
+        log.debug("WS recv:", trunc(raw, 500));
         const frames = raw.split(RS).filter((f) => f.length > 0);
 
         for (const frame of frames) {
@@ -258,7 +258,7 @@ export class CopilotSession {
 
       ws.on("close", () => {
         log.info("WS closed, fullText length:", fullText.length);
-        log.debug("Final response:", (deltaText || fullText).slice(0, 1000));
+        log.debug("Final response:", trunc(deltaText || fullText, 1000));
         onDone?.();
       });
 
@@ -366,7 +366,7 @@ export class CopilotSession {
         };
 
         const payload = JSON.stringify(chatMsg) + RS + JSON.stringify(metrics) + RS;
-        log.debug("WS send:", payload.slice(0, 500));
+        log.debug("WS send:", trunc(payload, 500));
         ws.send(payload);
         resolve(stream);
       };

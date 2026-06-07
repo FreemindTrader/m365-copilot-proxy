@@ -67,8 +67,17 @@ in
     environment = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
       default = { };
-      example = { M365_DEBUG = "1"; };
-      description = "Extra environment variables for the service (e.g. M365_DEBUG).";
+      example = { M365_TRACE = "1"; };
+      description = ''
+        Extra environment variables for the service.
+
+        Set `M365_DEBUG = "1"` for truncated debug logging, or `M365_TRACE = "1"`
+        for full, untruncated logging (every WS frame, prompt, and response) —
+        useful for reverse engineering failures. Both write to a debug file at
+        `$STATE_DIRECTORY/.config/opencode-m365/debug.log`
+        (i.e. `/var/lib/m365-copilot-proxy/.config/opencode-m365/debug.log`),
+        which persists across restarts.
+      '';
     };
   };
 

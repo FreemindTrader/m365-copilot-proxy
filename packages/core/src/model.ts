@@ -1,7 +1,7 @@
 import { getToken } from "./auth.js";
 import { getOrCreateAgent } from "./agent.js";
 import { CopilotSession } from "./session.js";
-import { createLogger } from "./log.js";
+import { createLogger, trunc } from "./log.js";
 import type { CopilotStream } from "./copilot.js";
 
 const log = createLogger("model");
@@ -70,7 +70,7 @@ export class ModelSession {
       this.copilotSession = this.createCopilotSession();
     }
 
-    log.info(`run: model=${model}, turn=${this.copilotSession.turnCount}, sid=${this.sessionId}, cid=${this.conversationId}, text=${JSON.stringify(text.slice(0, 200))}`);
+    log.info(`run: model=${model}, turn=${this.copilotSession.turnCount}, sid=${this.sessionId}, cid=${this.conversationId}, text=${JSON.stringify(trunc(text, 200))}`);
 
     try {
       return await this.copilotSession.chat(token, text, model);

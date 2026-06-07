@@ -2,6 +2,7 @@ import {
   ModelSession,
   type ModelSessionOptions,
   createLogger,
+  trunc,
   formatMessages,
   parseToolCalls,
   getMessageContent,
@@ -154,7 +155,7 @@ export async function handleChatCompletion(
     }
   }
 
-  log.debug("Formatted prompt:", text.slice(0, 1000));
+  log.debug("Formatted prompt:", trunc(text, 1000));
 
   const completionId = `chatcmpl-${crypto.randomUUID()}`;
   const created = Math.floor(Date.now() / 1000);
@@ -206,7 +207,7 @@ export async function handleChatCompletion(
     conv.sentMessageCount = body.messages.length;
     const fullText = result.fullText;
 
-    log.debug("Raw response (tool mode):", fullText.slice(0, 1000));
+    log.debug("Raw response (tool mode):", trunc(fullText, 1000));
     let parsed = parseToolCalls(fullText);
     log.info(`Parse result: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
 
@@ -218,7 +219,7 @@ export async function handleChatCompletion(
         log.info(`Mixed output detected (${extraText.length} chars of text alongside ${parsed.toolCalls.length} tool calls), stripping text`);
         // Strip the text — the tool calls are what the client needs.
         // Log the stripped text for debugging but don't send it downstream.
-        log.debug("Stripped text:", extraText.slice(0, 500));
+        log.debug("Stripped text:", trunc(extraText, 500));
         parsed = { ...parsed, textContent: null };
       }
     }

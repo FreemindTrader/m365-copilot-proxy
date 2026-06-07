@@ -11,7 +11,7 @@ import {
   JwtClaims,
 } from "./schemas.js";
 
-import { createLogger } from "./log.js";
+import { createLogger, trunc } from "./log.js";
 
 const RS = "\x1E";
 const log = createLogger("copilot");
@@ -116,7 +116,7 @@ export interface CopilotChatOptions {
 }
 
 export function copilotChat(token: string, text: string, model: string = "m365-copilot", options?: CopilotChatOptions): Promise<CopilotStream> {
-  log.info(`Chat request: model=${model}, agent=${options?.agentId ?? "none"}, text=${JSON.stringify(text.slice(0, 200))}`);
+  log.info(`Chat request: model=${model}, agent=${options?.agentId ?? "none"}, text=${JSON.stringify(trunc(text, 200))}`);
   const claims = decodeJwt(token);
   const sessionId = crypto.randomUUID();
   const conversationId = crypto.randomUUID();
@@ -234,7 +234,7 @@ export function copilotChat(token: string, text: string, model: string = "m365-c
 
     ws.on("message", (data: WebSocket.RawData) => {
       const raw = data.toString();
-      log.debug("WS recv:", raw.slice(0, 500));
+      log.debug("WS recv:", trunc(raw, 500));
       const frames = raw.split(RS).filter((f) => f.length > 0);
 
       for (const frame of frames) {
@@ -277,7 +277,7 @@ export function copilotChat(token: string, text: string, model: string = "m365-c
 
     ws.on("close", () => {
       log.info("WS closed, fullText length:", fullText.length);
-      log.debug("Final response:", fullText.slice(0, 1000));
+      log.debug("Final response:", trunc(fullText, 1000));
       onDone?.();
     });
 
@@ -387,7 +387,7 @@ export function copilotChat(token: string, text: string, model: string = "m365-c
       };
 
       const payload = JSON.stringify(chatMsg) + RS + JSON.stringify(metrics) + RS;
-      log.debug("WS send:", payload.slice(0, 500));
+      log.debug("WS send:", trunc(payload, 500));
       ws.send(payload);
       // Resolve with the stream now that we've sent the message
       resolve(stream);
