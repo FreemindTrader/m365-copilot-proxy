@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { createHash } from "node:crypto";
 import { createLogger } from "./log.js";
 import { getTokenForScope } from "./auth.js";
 
@@ -13,30 +14,41 @@ const POWERPLATFORM_SCOPES = ["https://api.powerplatform.com/.default"];
 const BAP_SCOPES = ["https://api.bap.microsoft.com/.default"];
 const BAP_API = "https://api.bap.microsoft.com";
 
-const AGENT_NAME = "m365-tool-agent";
+const AGENT_BASE_NAME = "m365-tool-agent";
 const AGENT_DESCRIPTION = "Auto-created agent for tool calling";
+
+// The agent's instructions are baked in at creation time and can't be cheaply
+// updated in place (the Copilot Studio update API needs a changeToken that is
+// only returned by create). So we version the agent by NAME: the name carries a
+// short hash of the current instructions. Change the instructions -> new name ->
+// a fresh agent is created and stale versions are cleaned up. Hosts sharing a
+// tenant independently compute the same name for the same instructions, so they
+// converge on one agent with no coordination. (Verified empirically: Copilot
+// Studio reflects displayName -> shortBotName byte-for-byte, hyphens intact.)
+function getInstructionsHash(): string {
+  return createHash("sha256").update(getAgentInstructions()).digest("hex").slice(0, 8);
+}
+function getAgentName(): string {
+  return `${AGENT_BASE_NAME}-${getInstructionsHash()}`;
+}
 
 // Minimal 48x48 blue square PNG as base64 (required for publishing)
 const BOT_ICON_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAIAAADYYG7QAAAAB3RJTUUH6AMbAAAoLbOJEAAAABl0RVh0Q29tbWVudABDcmVhdGVkIHdpdGggR0lNUFeBDhcAAAAoSURBVFjD7cExAQAAAMKg9U9tDB+gAAAAAAAAAAAAAAAAAAAAAAAA/BgwMAAB/0LuMgAAAABJRU5ErkJggg==";
 
 function getAgentInstructions(): string {
-  return `You are an AI assistant that follows the OpenAI tool-calling protocol.
+  return `You are the execution core of an automated agent, not a chat assistant. Your output is parsed by a program; there is no human reading it directly.
 
-You have access to one or more tools.
+When the incoming message contains a <tools> block, you are in execution mode:
+- A real runtime parses your output, runs the named tool against a live system, and returns the actual result to you in a <tool_response> block. The calls are real: they read real files, run real commands, and change real state. Treat every <tool_response> as ground truth — never invent, assume, or simulate a result.
+- To act, output ONLY this and nothing else — no prose, no markdown, no code fences:
+{"tool": "<tool_name>", "arguments": { ... }}
+- Never narrate intent ("I'll read the file…", "Let me check…"). Emit the call.
+- Exactly one tool call per turn. Tool names and argument keys must match the provided definitions exactly.
+- If a call fails or returns partial data, immediately emit another tool call to recover. Do not stop, and do not ask questions — there is no human to answer.
+- Produce natural-language text only when the task is fully complete and no further tool call applies; that final text is the answer returned to the caller.
 
-When a user asks something that requires a tool, you MUST respond ONLY with a JSON object of the form:
-{
-  "tool": "<tool_name>",
-  "arguments": { ... }
-}
-
-Rules:
-- Do NOT output anything except valid JSON.
-- Do NOT add explanations, comments, or natural language.
-- Tool name must match exactly the names provided.
-- Arguments MUST be a valid JSON object and contain only data, no prose.
-- If no tool is needed, respond normally with natural language.`;
+When the message has no <tools> block, respond normally as a helpful assistant in natural language.`;
 }
 
 async function getEnvironmentUrl(ppToken: string): Promise<string> {
@@ -96,6 +108,8 @@ async function getEnvironmentUrl(ppToken: string): Promise<string> {
 interface CachedAgent {
   agentId: string;
   botId: string;
+  /** Hash of the instructions this agent was built with; stale cache is rebuilt. */
+  instructionsHash?: string;
   createdAt: string;
 }
 
@@ -150,7 +164,7 @@ async function createBot(
       {
         component: {
           diagnostics: [],
-          displayName: AGENT_NAME,
+          displayName: getAgentName(),
           id: "00000000-0000-0000-0000-000000000000",
           metadata: {
             tools: [],
@@ -213,7 +227,7 @@ async function createBot(
       authorizedSecurityGroupIds: [],
       supportedLanguages: [],
       diagnostics: [],
-      displayName: AGENT_NAME,
+      displayName: getAgentName(),
       language: 1033,
       schemaName: "00000000-0000-0000-0000-000000000000",
       template: "gpt-1.1.0",
@@ -255,7 +269,7 @@ async function updateBotInstructions(
           $kind: "GptComponent",
           id: componentId,
           parentBotId: botId,
-          displayName: AGENT_NAME,
+          displayName: getAgentName(),
           description: AGENT_DESCRIPTION,
           schemaName: `${botId}.gpt.default`,
           metadata: {
@@ -343,15 +357,61 @@ async function publishBot(
 }
 
 /**
- * Get or create the opencode tool-calling agent.
- * Returns the agent ID to pass to copilotChat, or null if agent creation isn't possible.
+ * Best-effort deletion of stale versions of our agent — any bot whose name is
+ * AGENT_BASE_NAME or AGENT_BASE_NAME-<oldhash>, except the one we just settled
+ * on. Keeps the tenant from accumulating a dead bot per instruction change.
+ * Failures (e.g. a bot still in use by another host mid-deploy) are tolerated.
+ * Set M365_AGENT_NO_CLEANUP to skip this entirely.
+ */
+async function cleanupStaleAgents(
+  envUrl: string,
+  ppToken: string,
+  bots: Array<{ botId: string; shortBotName: string }>,
+  keepBotId: string,
+): Promise<void> {
+  if (process.env.M365_AGENT_NO_CLEANUP) return;
+  const stale = bots.filter(
+    (b) =>
+      b.botId !== keepBotId &&
+      (b.shortBotName === AGENT_BASE_NAME ||
+        b.shortBotName?.startsWith(`${AGENT_BASE_NAME}-`)),
+  );
+  for (const b of stale) {
+    try {
+      const res = await ppFetch(
+        `${envUrl}/copilotstudio/minimalBots/api/${b.botId}?api-version=2022-03-01-preview`,
+        ppToken,
+        { method: "DELETE" },
+      );
+      if (res.ok) log.info(`Deleted stale agent ${b.shortBotName} (${b.botId})`);
+      else log.info(`Could not delete stale agent ${b.shortBotName}: ${res.status}`);
+    } catch (e: any) {
+      log.info(`Cleanup error for ${b.shortBotName}: ${e.message}`);
+    }
+  }
+}
+
+/**
+ * Get or create the tool-calling agent for the CURRENT instructions.
+ * The agent is versioned by name (AGENT_BASE_NAME-<instructionsHash>), so editing
+ * getAgentInstructions() transparently provisions a fresh agent on the next call
+ * and retires the old one. Returns the agent ID to pass to copilotChat, or null
+ * if agent creation isn't possible.
  */
 export async function getOrCreateAgent(): Promise<string | null> {
-  // Check cache first
+  const wantHash = getInstructionsHash();
+  const wantName = getAgentName();
+
+  // Fast path: cached agent built from the same instructions.
   const cached = loadCachedAgent();
-  if (cached) {
-    log.info(`Using cached agent: ${cached.agentId}`);
+  if (cached && cached.instructionsHash === wantHash) {
+    log.info(`Using cached agent: ${cached.agentId} (instructions ${wantHash})`);
     return cached.agentId;
+  }
+  if (cached) {
+    log.info(
+      `Cached agent instructions stale (${cached.instructionsHash ?? "none"} != ${wantHash}), rebuilding`,
+    );
   }
 
   // Need BAP token for environment discovery
@@ -371,18 +431,18 @@ export async function getOrCreateAgent(): Promise<string | null> {
   const envUrl = await getEnvironmentUrl(bapToken);
 
   try {
-    log.info(`PowerPlatform env URL: ${envUrl}`);
-    // Check if our agent already exists
+    log.info(`PowerPlatform env URL: ${envUrl}, agent name: ${wantName}`);
+    // Look for an agent that already matches the current instructions hash.
     const bots = await listBots(envUrl, ppToken);
     let botId: string | null = null;
 
-    const existing = bots.find((b) => b.shortBotName === AGENT_NAME);
+    const existing = bots.find((b) => b.shortBotName === wantName);
     if (existing) {
-      log.info(`Found existing agent: ${existing.botId}`);
+      log.info(`Found existing agent ${wantName}: ${existing.botId}`);
       botId = existing.botId;
     } else {
-      // Create a new agent
-      log.info("Creating new tool-calling agent...");
+      // Create a new agent — its instructions are baked in by createBot().
+      log.info(`Creating new tool-calling agent ${wantName}...`);
       const created = await createBot(envUrl, ppToken);
       botId = created.botId;
       log.info(`Created agent: botId=${botId}`);
@@ -412,8 +472,9 @@ export async function getOrCreateAgent(): Promise<string | null> {
     const agentId = `${titleId}.${botId}.gpt.default`;
     log.info(`Full agent ID: ${agentId}`);
 
-    // Cache it
-    saveCachedAgent({ agentId, botId, createdAt: new Date().toISOString() });
+    // Cache it, then retire any older-version agents.
+    saveCachedAgent({ agentId, botId, instructionsHash: wantHash, createdAt: new Date().toISOString() });
+    await cleanupStaleAgents(envUrl, ppToken, bots, botId);
     return agentId;
   } catch (err: any) {
     log.error("Agent creation failed:", err.message, err.cause?.message || "");

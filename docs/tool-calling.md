@@ -50,6 +50,14 @@ instructions in its **server-side** system prompt. Without the agent, M365 ignor
 per-request injection and answers in prose (or hallucinates). See
 [m365-copilot-api.md](./m365-copilot-api.md) for why.
 
+These instructions are baked in at agent-creation time and can't be cheaply updated in
+place, so the agent is **versioned by name**: it's called `m365-tool-agent-<hash>`, where
+`<hash>` is a short SHA-256 of the current instructions. Editing `getAgentInstructions()`
+changes the hash, so the next request provisions a fresh agent and a cleanup pass retires
+the stale ones. Hosts sharing a tenant compute the same name for the same instructions and
+converge on one agent with no coordination. Set `M365_AGENT_NO_CLEANUP` to keep old
+versions around (e.g. while several hosts on different versions share a tenant).
+
 ### 3. Fail-Closed Parsing (packages/proxy-lib/src/handler.ts)
 
 When `parseToolCalls()` detects both tool calls AND extra text content:
