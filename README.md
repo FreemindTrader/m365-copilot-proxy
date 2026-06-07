@@ -186,6 +186,11 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 | `gpt-5.2` | Gpt_5_2_Quick | GPT-5.2 fast |
 | `gpt-5.2-think-deeper` | Gpt_5_2_Reasoning | GPT-5.2 reasoning |
 
+> ⚠️ **For tool calling, use the default or a `*-quick` tone.** The reasoning tones
+> (`*-think-deeper`, bare `gpt-5.x`) route through M365's `DeepLeo` pipeline, which
+> meta-analyzes the injected prompt instead of obeying it and disengages from tools.
+> See [docs/m365-copilot-api.md](docs/m365-copilot-api.md) §5/§10.
+
 ## Authentication
 
 The auth flow uses Azure MSAL with PKCE:
@@ -203,7 +208,11 @@ Three token scopes are acquired:
 
 | Variable | Description |
 |---|---|
-| `M365_DEBUG` | Set to `1` to enable debug logging to `~/.config/opencode-m365/debug.log` |
+| `M365_DEBUG` | Set to `1` to enable debug logging to `~/.config/opencode-m365/debug.log` (truncated payloads) |
+| `M365_TRACE` | Set to `1` for full, untruncated debug logging (every WS frame/prompt/response) — implies `M365_DEBUG`. For reverse engineering. |
+| `M365_NO_INTERACTIVE` | Set to `1` to forbid the visible-browser login fallback (automated runs fail loudly instead of hanging) |
+| `M365_AGENT_NO_CLEANUP` | Skip deleting stale `m365-tool-agent-*` versions (use during staggered multi-host rollouts) |
+| `M365_ALLOW_MULTI_TOOL` | Allow the model to emit multiple tool calls per turn (default: only the first is kept) |
 | `M365_CACHE_FILE` | Override MSAL token cache location |
 | `M365_SECRETS_FILE` | Override credentials file location |
 | `CHROMIUM_PATH` | Path to Chromium binary for automated login |

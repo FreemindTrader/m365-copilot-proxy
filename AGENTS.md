@@ -54,11 +54,19 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
 
 - **Tool calling only works via a Copilot Studio agent.** The per-request JSON format
   (bare vs ```` ```json ````) barely matters; the agent's server-side prompt is the lever.
-- **`agent.ts::updateBotInstructions` is dead code** — `getOrCreateAgent` only republishes
-  an existing agent. Editing `getAgentInstructions()` has NO effect on an already-created
-  agent; you must delete+recreate the bot.
+- **The agent is versioned by an instructions hash.** Its name is
+  `m365-tool-agent-<sha256(instructions)[:8]>`, so editing `getAgentInstructions()` auto-
+  provisions a fresh agent on the next request and a cleanup pass retires the old one
+  (`M365_AGENT_NO_CLEANUP` to skip). `updateBotInstructions()` is still dead code — we
+  re-create rather than update in place. Multi-host footgun: a host on new code deletes the
+  old agent that hosts on old code may still be using mid-conversation. See API doc §10.
+- **Reasoning tones don't work with the agent.** `gpt-5.x` / `*-think-deeper` route through
+  the `DeepLeo` reasoning pipeline, which meta-analyzes the injected prompt instead of
+  obeying it. Only the default `magic` and `*-quick` tones behave. The model can't be bound
+  to our (declarative `minimalBots`) agent type at all — see API doc §10 *Agent types*.
 - **M365 disengages on large tool payloads.** Keep injected toolsets lean. This is why
-  pi works and heavy harnesses (opencode) don't.
+  pi works and heavy harnesses (opencode) don't. The proxy also enforces one tool call per
+  turn and strips M365's invented `{confidence}`/`{final}` JSON (`M365_ALLOW_MULTI_TOOL` to opt out).
 - The `nativeclient` OAuth redirect bounces to `/common/wrongplace`; the auth code is
   scraped from the navigation request, not a settled URL.
 
