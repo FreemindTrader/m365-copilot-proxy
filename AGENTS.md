@@ -13,6 +13,10 @@ protocol code** — it documents every quirk of the M365 API (auth, SignalR fram
 tones, throttling, the "Disengaged" filter, Copilot Studio agents). It is the source
 of truth; keep it in sync if you change protocol behaviour.
 
+[`docs/hypotheses.md`](docs/hypotheses.md) is the open-questions notebook —
+tool-call compliance experiments, the search for token/context-window data, the
+"how do we improve this proxy" backlog. Update it whenever an experiment lands.
+
 ## Layout (pnpm workspace, all TypeScript/ESM)
 
 | Package | Role |

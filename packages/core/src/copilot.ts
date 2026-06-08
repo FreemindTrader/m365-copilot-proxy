@@ -108,6 +108,12 @@ export interface CopilotStream {
   hasContent: boolean;
   /** Throttle info if provided by M365 */
   throttle: { current: number; max: number } | null;
+  /** `DeepLeo` (reasoning) / `3PDeclarativeAgent` (agent) / etc.  */
+  contentOrigin?: string | null;
+  /** Last seen messageType (e.g. `Disengaged`, `EndOfRequest`). Null when M365 sends an unmistakably content message. */
+  messageType?: string | null;
+  /** Server-assigned bot message id, useful for telemetry correlation. */
+  messageId?: string | null;
 }
 
 export interface CopilotChatOptions {

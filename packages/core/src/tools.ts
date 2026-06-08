@@ -167,6 +167,38 @@ function fewShotExample(tools: ToolDef[]): string[] {
   ];
 }
 
+/**
+ * Inject a synthetic `reply(text)` tool that the model calls instead of
+ * answering in prose. Wired by the handler (which converts `reply` back to a
+ * plain assistant message), so it's invisible to the client. Off by default —
+ * set `M365_INJECT_REPLY_TOOL=1` to enable.
+ *
+ * Why this matters: M365 mostly disobeys "only emit JSON" when the right
+ * answer is text. Routing text through a `reply()` call makes EVERY turn a
+ * tool call, which is a much cleaner contract for the model to follow.
+ *
+ * Tradeoff: adds 1 tool to the prompt, which nudges the Disengaged-filter
+ * threshold a tiny bit. Safe with lean toolsets (<= ~10 tools).
+ */
+function maybeInjectReplyTool(tools: ToolDef[]): ToolDef[] {
+  if (!process.env.M365_INJECT_REPLY_TOOL) return tools;
+  if (tools.some((t) => t.function.name === "reply")) return tools;
+  const replyTool: ToolDef = {
+    type: "function",
+    function: {
+      name: "reply",
+      description:
+        "Send a plain-text answer to the user. Use this whenever you would otherwise reply in prose.",
+      parameters: {
+        type: "object",
+        properties: { text: { type: "string", description: "The text to send" } },
+        required: ["text"],
+      },
+    },
+  };
+  return [replyTool, ...tools];
+}
+
 export function formatMessages(
   messages: Message[],
   tools?: ToolDef[],
@@ -179,12 +211,13 @@ export function formatMessages(
     parts.push(`<conversation_id>${conversationId}</conversation_id>`);
   }
 
-  if (tools && tools.length > 0 && toolChoice !== "none") {
-    parts.push(`<system>\n${formatToolDefinitions(tools)}${formatToolChoiceInstruction(toolChoice)}\n</system>`);
+  const effectiveTools = tools ? maybeInjectReplyTool(tools) : tools;
+  if (effectiveTools && effectiveTools.length > 0 && toolChoice !== "none") {
+    parts.push(`<system>\n${formatToolDefinitions(effectiveTools)}${formatToolChoiceInstruction(toolChoice)}\n</system>`);
 
     // Few-shot built from the client's real tools (see fewShotExample). No
     // chit-chat example (taught prose answers), no batching (taught plan-dumps).
-    parts.push(...fewShotExample(tools));
+    parts.push(...fewShotExample(effectiveTools));
   }
 
   for (const m of messages) {

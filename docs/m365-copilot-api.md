@@ -369,8 +369,21 @@ Evidence (`scripts/dataverse-bot-probe.mjs`, with a `<org>.crm4.dynamics.com/.de
 | `studio-dig.mjs` | Logs into the real Copilot Studio UI (Playwright + TOTP) and **captures every API call** → revealed Dataverse + PVA + ECS layers |
 | `dataverse-bot-probe.mjs` | Queries Dataverse (`<org>.crm4.dynamics.com`) directly — proved our agents aren't Dataverse bots |
 | `proxy-verify.mjs` | End-to-end proxy check (`--agent --multiturn --manytools`) — reproduces disengagement, verifies the tool loop |
+| `frame-dump-probe.mjs` | Sends one chat turn and dumps every field of every WS frame; flags token/usage-shaped keys/values. Hunts for hidden metrics. |
+| `tool-compliance-experiment.mjs` | A/B harness over prompt variants × prompts. Scores tool-call compliance and Disengaged rate per variant. Burns ~30 messages. |
+| `usage-endpoint-hunt.mjs` | Sweeps Sydney/Power Platform/BAP REST endpoints looking for token-usage / context-window data outside the WebSocket. |
+| `toolformat-experiment.mjs` | Older tool-format A/B (bare JSON vs ```` ```json ```` vs ```` ```tool_call ````); kept around for reference. |
 
-Run unsandboxed with `CHROMIUM_PATH` set and `M365_NO_INTERACTIVE=1`. They reuse the stored MSAL cache / automated login. Output (screenshots, captured network) lands in `scripts/studio-dig-out/` (gitignored).
+Run unsandboxed with `CHROMIUM_PATH` set and `M365_NO_INTERACTIVE=1`. They reuse the stored MSAL cache / automated login. Output (screenshots, captured network) lands in `scripts/*-out/` (gitignored).
+
+### Frame dumping at runtime (`M365_DUMP_FRAMES=1`)
+
+When set, `CopilotSession` appends every WS frame (both `send` and `recv`,
+both raw chat invocation and bot updates) to
+`~/.config/opencode-m365/frames/<requestId>.ndjson`. Use this in production
+to catch a regression mid-flight: ship the suspect NDJSON to a dev box and
+diff against a known-good capture. Negligible overhead since the data is
+already in memory.
 
 ---
 

@@ -1,4 +1,7 @@
 import WebSocket from "ws";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import {
   SignalRHandshakeResponse,
   DeltaUpdate,
@@ -12,6 +15,25 @@ import { createLogger, trunc } from "./log.js";
 
 const RS = "\x1E";
 const log = createLogger("session");
+
+// --- Optional per-request frame dumping for reverse engineering ---
+// Enabled by M365_DUMP_FRAMES=1. Every SignalR frame received is appended to a
+// per-request NDJSON file under ~/.config/opencode-m365/frames/. Cheap to run
+// in production; gives us forensic data when M365 starts emitting new fields.
+const DUMP_FRAMES = !!process.env.M365_DUMP_FRAMES;
+const DUMP_DIR = join(homedir(), ".config", "opencode-m365", "frames");
+function dumpFrame(requestId: string, parsed: unknown, direction: "recv" | "send") {
+  if (!DUMP_FRAMES) return;
+  try {
+    mkdirSync(DUMP_DIR, { recursive: true });
+    appendFileSync(
+      join(DUMP_DIR, `${requestId}.ndjson`),
+      JSON.stringify({ t: Date.now(), dir: direction, frame: parsed }) + "\n",
+    );
+  } catch {
+    // best effort
+  }
+}
 
 const VARIANTS = [
   "EnableMcpServerWidgets",
@@ -126,6 +148,9 @@ export class CopilotSession {
       let deltaText = "";
       let receivedContent = false;
       let throttleInfo: { current: number; max: number } | null = null;
+      let contentOrigin: string | null = null;
+      let messageType: string | null = null;
+      let messageId: string | null = null;
       let onDelta: ((text: string) => void) | null = null;
       let onDone: (() => void) | null = null;
       let onError: ((err: Error) => void) | null = null;
@@ -139,6 +164,15 @@ export class CopilotSession {
         },
         get throttle() {
           return throttleInfo;
+        },
+        get contentOrigin() {
+          return contentOrigin;
+        },
+        get messageType() {
+          return messageType;
+        },
+        get messageId() {
+          return messageId;
         },
 
         [Symbol.asyncIterator]() {
@@ -229,6 +263,7 @@ export class CopilotSession {
             }
             continue;
           }
+          dumpFrame(requestId, parsed, "recv");
 
           if (!handshakeDone) {
             handshakeDone = true;
@@ -367,6 +402,8 @@ export class CopilotSession {
 
         const payload = JSON.stringify(chatMsg) + RS + JSON.stringify(metrics) + RS;
         log.debug("WS send:", trunc(payload, 500));
+        dumpFrame(requestId, chatMsg, "send");
+        dumpFrame(requestId, metrics, "send");
         ws.send(payload);
         resolve(stream);
       };
@@ -415,6 +452,14 @@ export class CopilotSession {
             const msgUpdate = MessageUpdate.safeParse(arg);
             if (msgUpdate.success) {
               for (const m of msgUpdate.data.messages) {
+                // Capture diagnostic meta from every bot message — including the
+                // control-typed ones — so callers can tell apart `DeepLeo` from
+                // `3PDeclarativeAgent` and surface `Disengaged` cleanly.
+                if (m.author === "bot") {
+                  if (m.contentOrigin) contentOrigin = m.contentOrigin;
+                  if (m.messageType) messageType = m.messageType;
+                  if (m.messageId) messageId = m.messageId;
+                }
                 if (m.author === "bot" && m.text && !m.messageType) {
                   receivedContent = true;
                   fullText = m.text;

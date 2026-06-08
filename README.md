@@ -210,12 +210,38 @@ Three token scopes are acquired:
 |---|---|
 | `M365_DEBUG` | Set to `1` to enable debug logging to `~/.config/opencode-m365/debug.log` (truncated payloads) |
 | `M365_TRACE` | Set to `1` for full, untruncated debug logging (every WS frame/prompt/response) — implies `M365_DEBUG`. For reverse engineering. |
+| `M365_DUMP_FRAMES` | Set to `1` to write every WebSocket frame (both directions) to `~/.config/opencode-m365/frames/<requestId>.ndjson`. For offline diffing of new M365 fields. |
 | `M365_NO_INTERACTIVE` | Set to `1` to forbid the visible-browser login fallback (automated runs fail loudly instead of hanging) |
 | `M365_AGENT_NO_CLEANUP` | Skip deleting stale `m365-tool-agent-*` versions (use during staggered multi-host rollouts) |
 | `M365_ALLOW_MULTI_TOOL` | Allow the model to emit multiple tool calls per turn (default: only the first is kept) |
+| `M365_INJECT_REPLY_TOOL` | Set to `1` to inject a synthetic `reply(text)` tool. Forces every turn to be a tool call, including pure-prose answers. Cleaner contract for the model, +1 tool to the prompt (watch the Disengaged threshold). See [docs/hypotheses.md §1.1](docs/hypotheses.md). |
 | `M365_CACHE_FILE` | Override MSAL token cache location |
 | `M365_SECRETS_FILE` | Override credentials file location |
 | `CHROMIUM_PATH` | Path to Chromium binary for automated login |
+
+### Usage / context-window % in responses
+
+The OpenAI `usage` block in every chat completion response now includes M365
+extension fields with the **per-conversation message quota** — the closest
+proxy we have to "context-window utilisation" since M365 hides token counts:
+
+```json
+"usage": {
+  "prompt_tokens": 0,
+  "completion_tokens": 0,
+  "total_tokens": 0,
+  "x_m365_conversation_messages": 42,
+  "x_m365_conversation_max": 600,
+  "x_m365_conversation_pct": 7,
+  "x_m365_conversation_remaining": 558,
+  "x_m365_content_origin": "3PDeclarativeAgent",
+  "x_m365_message_type": null
+}
+```
+
+Clients that ignore unknown extension fields keep working; curious users can
+read them. See [docs/hypotheses.md §2/§3](docs/hypotheses.md) for the search
+log on actual token counts.
 
 ## Config files
 

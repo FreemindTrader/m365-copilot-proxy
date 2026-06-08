@@ -164,6 +164,13 @@ export async function handleChatCompletion(
   const MAX_RETRIES = 2;
   const SHORT_RETRY_DELAY_MS = 2_000;
 
+  // Captured from the final attempt — surfaced through the OpenAI `usage` block
+  // so clients can see M365's conversation-quota % (the closest proxy we have
+  // to "context window remaining"). Token counts aren't exposed by M365.
+  let lastThrottle: { current: number; max: number } | null = null;
+  let lastContentOrigin: string | null | undefined;
+  let lastMessageType: string | null | undefined;
+
   async function runBuffered(): Promise<{ fullText: string } | { error: Response }> {
     let agentRefreshed = false;
     const originalText = text;
@@ -184,6 +191,10 @@ export async function handleChatCompletion(
       } catch (err: any) {
         return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
       }
+
+      lastThrottle = copilotStream.throttle;
+      lastContentOrigin = copilotStream.contentOrigin;
+      lastMessageType = copilotStream.messageType;
 
       if (copilotStream.hasContent || fullText.length > 0) {
         return { fullText };
@@ -269,7 +280,7 @@ export async function handleChatCompletion(
           return jsonResponse(200, {
             id: completionId, object: "chat.completion", created, model,
             choices: [{ index: 0, message: { role: "assistant", content: replyText }, finish_reason: "stop" }],
-            usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+            usage: buildUsage(lastThrottle, lastContentOrigin, lastMessageType),
           });
         }
       }
@@ -305,7 +316,7 @@ export async function handleChatCompletion(
             },
             finish_reason: "tool_calls",
           }],
-          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+          usage: buildUsage(lastThrottle, lastContentOrigin, lastMessageType),
         });
       }
     } else {
@@ -315,7 +326,7 @@ export async function handleChatCompletion(
         return jsonResponse(200, {
           id: completionId, object: "chat.completion", created, model,
           choices: [{ index: 0, message: { role: "assistant", content: fullText }, finish_reason: "stop" }],
-          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+          usage: buildUsage(lastThrottle, lastContentOrigin, lastMessageType),
         });
       }
     }
@@ -337,6 +348,39 @@ export async function handleChatCompletion(
       usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     });
   }
+}
+
+/**
+ * Build the OpenAI-style `usage` block from whatever diagnostic info M365 gave
+ * us. Token counts are NOT exposed by M365's WebSocket API (we'd need to count
+ * locally with a tokenizer that matches the underlying model — see the doc on
+ * token-usage hypotheses). What M365 does send is a **conversation quota**:
+ * how many user messages out of the 600-per-conversation cap have been spent.
+ *
+ * That's a different axis from token-window utilisation, but it's the closest
+ * thing we have to "remaining budget", so we surface it as extension fields
+ * (`x_m365_*`) alongside the zeroed standard counters. Real OpenAI clients
+ * ignore unknown extension fields; curious users can read them.
+ */
+function buildUsage(
+  throttle: { current: number; max: number } | null,
+  contentOrigin?: string | null,
+  messageType?: string | null,
+): Record<string, unknown> {
+  const base: Record<string, unknown> = {
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+  };
+  if (throttle) {
+    base.x_m365_conversation_messages = throttle.current;
+    base.x_m365_conversation_max = throttle.max;
+    base.x_m365_conversation_pct = Math.min(100, Math.round((throttle.current / throttle.max) * 100));
+    base.x_m365_conversation_remaining = Math.max(0, throttle.max - throttle.current);
+  }
+  if (contentOrigin) base.x_m365_content_origin = contentOrigin;
+  if (messageType) base.x_m365_message_type = messageType;
+  return base;
 }
 
 // --- Helpers ---

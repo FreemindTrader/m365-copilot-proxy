@@ -122,6 +122,61 @@ describe("parseToolCalls", () => {
   });
 });
 
+describe("M365_INJECT_REPLY_TOOL", () => {
+  // Lazily import formatMessages so we pick up the env var per test.
+  async function importFormat() {
+    const mod = await import("./tools.js");
+    return mod.formatMessages;
+  }
+
+  const sampleTools = [
+    {
+      type: "function" as const,
+      function: {
+        name: "bash",
+        description: "Run a shell command",
+        parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+      },
+    },
+  ];
+  const userMsg = [{ role: "user" as const, content: "do a thing" }];
+
+  it("does NOT inject the reply tool when the env var is unset", async () => {
+    delete process.env.M365_INJECT_REPLY_TOOL;
+    const fmt = await importFormat();
+    const out = fmt(userMsg, sampleTools);
+    expect(out).not.toContain('"name": "reply"');
+  });
+
+  it("injects a reply tool when M365_INJECT_REPLY_TOOL is set", async () => {
+    process.env.M365_INJECT_REPLY_TOOL = "1";
+    const fmt = await importFormat();
+    const out = fmt(userMsg, sampleTools);
+    expect(out).toContain('"name": "reply"');
+    // It must also still include the caller's tools
+    expect(out).toContain('"name": "bash"');
+    delete process.env.M365_INJECT_REPLY_TOOL;
+  });
+
+  it("doesn't double-inject a reply tool already provided by the caller", async () => {
+    process.env.M365_INJECT_REPLY_TOOL = "1";
+    const fmt = await importFormat();
+    const callerReply = {
+      type: "function" as const,
+      function: {
+        name: "reply",
+        description: "Caller-supplied reply",
+        parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+      },
+    };
+    const out = fmt(userMsg, [callerReply, ...sampleTools]);
+    // Exactly one definition with name: "reply"
+    const matches = out.match(/"name": "reply"/g) ?? [];
+    expect(matches).toHaveLength(1);
+    delete process.env.M365_INJECT_REPLY_TOOL;
+  });
+});
+
 describe("formatToolDefinitions", () => {
   const tools = [
     {
