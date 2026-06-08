@@ -293,6 +293,12 @@ The agent's instructions are **baked in at create time** and can't be cheaply up
 
 > ⚠️ Multi-host footgun: editing the instructions changes the hash → a host on the new build creates the new agent and its cleanup **deletes the old one out from under hosts still running the old build mid-conversation** → they get empty replies (looks like a hang). Deploy hosts together, or set `M365_AGENT_NO_CLEANUP` during a staggered rollout.
 
+> ⚠️ **The deleted-agent trap (observed live, June 2026).** A long-lived host (e.g. the systemd service) resolves its agent **once** at first request and keeps the id in memory for the whole process lifetime — `ModelSession.cachedAgentId` is only set when `=== undefined`, and `reset()` does **not** clear it. So a host **cannot self-heal**: once its agent is deleted from the tenant (by the cleanup above, typically triggered when a *newer*-prompt build runs `getOrCreateAgent` from a developer's local checkout), every subsequent request keeps sending `threadLevelGptId` pointing at a **bot that no longer exists**, and M365 returns an **instant empty reply** (`hasContent=false`, `throttle=null`, ~0.7 s). Symptoms: plain chat hangs (old builds retried empties forever; see quirk #16), tool chat reports a bogus **"rate limited"**. Meanwhile the browser UI works fine because its session is independent of this agent/token state, and `getToken()` is healthy — which makes it look like a token/throttle problem when it is neither.
+>
+> **How to tell it apart:** an empty reply with `throttle: null` returning in well under a second is a dead/invalid agent, **not** throttling (real throttling carries `throttle.current >= throttle.max`). Confirm by listing tenant bots (`scripts/listbots-probe.mjs`) and checking the host's `agent-id.json` `botId` is still present.
+>
+> **Immediate fix:** restart the host (`systemctl restart m365-copilot-proxy`) — it re-resolves/recreates the agent at startup. **Avoid recurrence:** keep every host on the *same build* as whatever creates agents (same instructions → same hash → shared agent, never cleaned up), or set `M365_AGENT_NO_CLEANUP` on dev checkouts. **Durable code fix:** clear `cachedAgentId` on an empty reply (and in `reset()`) so the next `run()` re-resolves the agent and the host recovers without a restart.
+
 ### Agent types: declarative (`minimalBots`) vs Studio/Dataverse — and why you can't bind a model
 A natural idea is "give each model its own agent with the right system prompt." **You can't, with our agent type.** Reverse-engineering the real Copilot Studio UI (drive it with Playwright, capture its network — see `scripts/studio-dig.mjs`) shows there are **two different species of agent**:
 
@@ -337,6 +343,7 @@ Evidence (`scripts/dataverse-bot-probe.mjs`, with a `<org>.crm4.dynamics.com/.de
 | 15 | Agent is **versioned by name** (`m365-tool-agent-<sha256-prefix>`); editing instructions auto-provisions a new one + cleans up old | §10 |
 | 16 | Empty reply ≠ rate limit unless throttle is at-limit; otherwise fail fast (don't burn 60s of retries) | `handler.ts` |
 | 17 | M365 invents `{"confidence":N}` / `{"final":"…"}` JSON and batches calls + premature `✅ SUCCESS`; proxy strips them + enforces one call/turn | `tools.ts`/`handler.ts` |
+| 18 | **Deleted-agent trap:** a long-lived host caches its agent id for life (`reset()` won't clear it) and can't self-heal when its bot is cleaned up; dead agent → instant empty reply (`throttle:null`, ~0.7s) misread as "rate limited". Restart, or clear `cachedAgentId` on empty | `model.ts`/§10 |
 
 ---
 

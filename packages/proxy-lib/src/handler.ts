@@ -165,6 +165,8 @@ export async function handleChatCompletion(
   const SHORT_RETRY_DELAY_MS = 2_000;
 
   async function runBuffered(): Promise<{ fullText: string } | { error: Response }> {
+    let agentRefreshed = false;
+    const originalText = text;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       let copilotStream;
       try {
@@ -197,6 +199,22 @@ export async function handleChatCompletion(
         return { error: rateLimitResponse(t) };
       }
       if (attempt < MAX_RETRIES) {
+        // A dead/deleted agent returns an instant empty reply (throttle: null).
+        // Re-resolve the agent once before retrying so a long-lived host
+        // self-heals from the deleted-agent trap instead of looping on empties.
+        if (!agentRefreshed) {
+          agentRefreshed = true;
+          const agentChanged = await session.refreshAgent();
+          if (agentChanged) {
+            // The cached agent was stale/deleted and has been re-resolved.
+            // Resend the original prompt to the fresh agent — a bare "continue"
+            // would have no context since the dead agent processed nothing.
+            log.info("Agent re-resolved after empty reply, resending original prompt");
+            text = originalText;
+            await new Promise(r => setTimeout(r, SHORT_RETRY_DELAY_MS));
+            continue;
+          }
+        }
         log.info(`Empty upstream response, quick retry in ${SHORT_RETRY_DELAY_MS / 1000}s (attempt ${attempt + 1}/${MAX_RETRIES})`);
         await new Promise(r => setTimeout(r, SHORT_RETRY_DELAY_MS));
         text = "Please continue."; // M365 already has context

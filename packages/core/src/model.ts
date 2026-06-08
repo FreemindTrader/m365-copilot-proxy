@@ -82,8 +82,40 @@ export class ModelSession {
     }
   }
 
-  /** Reset the CopilotSession. Next run() reconnects with the same sessionId/conversationId. */
+  /**
+   * Force a re-resolution of the tool-calling agent against the tenant and
+   * reconnect if it changed. Recovers from the "deleted-agent trap": a
+   * long-lived host caches its agent id for the whole process lifetime, so once
+   * that agent is deleted from the tenant (e.g. by a newer-build's cleanup) it
+   * would otherwise send `threadLevelGptId` at a dead bot forever and get empty
+   * replies. Call this on an empty upstream reply before retrying. No-op when
+   * the session isn't using an agent. Returns true if the agent id changed (and
+   * the session was dropped to reconnect), so the caller can resend the original
+   * prompt to the fresh agent.
+   */
+  async refreshAgent(): Promise<boolean> {
+    if (!this.useAgent) return false;
+    try {
+      const fresh = await getOrCreateAgent({ forceRefresh: true });
+      if (fresh !== this.cachedAgentId) {
+        log.info(`Agent refreshed: ${this.cachedAgentId ?? "none"} -> ${fresh ?? "none"}`);
+        this.cachedAgentId = fresh;
+        this.copilotSession = null; // reconnect so the new agent id takes effect
+        return true;
+      }
+    } catch (err: any) {
+      log.info(`Agent refresh failed: ${err.message}`);
+    }
+    return false;
+  }
+
+  /**
+   * Reset the CopilotSession. Next run() reconnects with the same
+   * sessionId/conversationId. Also drops the cached agent id so the next run()
+   * re-resolves it (cheap cache fast-path in the normal case).
+   */
   reset() {
     this.copilotSession = null;
+    this.cachedAgentId = undefined;
   }
 }

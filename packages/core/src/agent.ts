@@ -402,13 +402,19 @@ async function cleanupStaleAgents(
  * and retires the old one. Returns the agent ID to pass to copilotChat, or null
  * if agent creation isn't possible.
  */
-export async function getOrCreateAgent(): Promise<string | null> {
+export async function getOrCreateAgent(
+  opts: { forceRefresh?: boolean } = {},
+): Promise<string | null> {
   const wantHash = getInstructionsHash();
   const wantName = getAgentName();
 
   // Fast path: cached agent built from the same instructions.
+  // Skipped on forceRefresh: that path re-validates against the tenant to
+  // recover from an agent that was deleted out from under a long-lived host
+  // (the "deleted-agent trap" — see docs/m365-copilot-api.md §10). The cache
+  // would otherwise keep handing back the now-dead agent id.
   const cached = loadCachedAgent();
-  if (cached && cached.instructionsHash === wantHash) {
+  if (!opts.forceRefresh && cached && cached.instructionsHash === wantHash) {
     log.info(`Using cached agent: ${cached.agentId} (instructions ${wantHash})`);
     return cached.agentId;
   }
@@ -476,9 +482,13 @@ export async function getOrCreateAgent(): Promise<string | null> {
     const agentId = `${titleId}.${botId}.gpt.default`;
     log.info(`Full agent ID: ${agentId}`);
 
-    // Cache it, then retire any older-version agents.
+    // Cache it, then retire any older-version agents. A forceRefresh is a
+    // self-heal of THIS host; skip cleanup so a recovering host doesn't delete
+    // agents that other (e.g. newer-build) hosts are actively using.
     saveCachedAgent({ agentId, botId, instructionsHash: wantHash, createdAt: new Date().toISOString() });
-    await cleanupStaleAgents(envUrl, ppToken, bots, botId);
+    if (!opts.forceRefresh) {
+      await cleanupStaleAgents(envUrl, ppToken, bots, botId);
+    }
     return agentId;
   } catch (err: any) {
     log.error("Agent creation failed:", err.message, err.cause?.message || "");
