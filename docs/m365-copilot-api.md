@@ -372,6 +372,7 @@ Evidence (`scripts/dataverse-bot-probe.mjs`, with a `<org>.crm4.dynamics.com/.de
 | `frame-dump-probe.mjs` | Sends one chat turn and dumps every field of every WS frame; flags token/usage-shaped keys/values. Hunts for hidden metrics. |
 | `tool-compliance-experiment.mjs` | A/B harness over prompt variants × prompts. Scores tool-call compliance and Disengaged rate per variant. Burns ~30 messages. |
 | `usage-endpoint-hunt.mjs` | Sweeps Sydney/Power Platform/BAP REST endpoints looking for token-usage / context-window data outside the WebSocket. |
+| `variants-bisect.mjs` | Bisects the 40-flag `VARIANTS` query-string list to find which flag controls Disengaged / streaming routing. ~10 messages per target. |
 | `toolformat-experiment.mjs` | Older tool-format A/B (bare JSON vs ```` ```json ```` vs ```` ```tool_call ````); kept around for reference. |
 
 Run unsandboxed with `CHROMIUM_PATH` set and `M365_NO_INTERACTIVE=1`. They reuse the stored MSAL cache / automated login. Output (screenshots, captured network) lands in `scripts/*-out/` (gitignored).

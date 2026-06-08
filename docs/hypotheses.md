@@ -134,15 +134,13 @@ without code changes.
 
 ---
 
-## 7. New probes to write (tomorrow)
+## 7. New probes to write
 
-- `usage-endpoint-hunt.mjs` — sweep candidate REST endpoints
-  (`/sydney/v1/me/usage`, `/sydney/UsageMetrics`, `/sydney/v1/licenses`,
-  `/sydney/v1/conversations/{id}/metadata`) with the Sydney token for 200/404.
-- `variants-bisect.mjs` — turn off each flag in `VARIANTS` one at a time and
-  diff the resulting frames; find which flag controls Disengaged.
-- `admin-portal-dig.mjs` — Playwright-drive Microsoft 365 admin's Copilot
-  usage page (`admin.microsoft.com/.../copilot/usage`); capture the API call
-  that returns the dashboard data.
-- `inputmethod-experiment.mjs` — flip `inputMethod` and `experienceType`
-  through plausible enum values and watch compliance/Disengaged rate.
+| Status | Probe | What it does |
+|---|---|---|
+| 🟢 | `scripts/usage-endpoint-hunt.mjs` | Sweep Sydney/PP/BAP REST endpoints for token usage. |
+| 🟢 | `scripts/variants-bisect.mjs` | Bisect the 40-flag `VARIANTS` list to find which one(s) control Disengaged / streaming mode. |
+| 🟢 | `scripts/frame-dump-probe.mjs` | Dump every field of every frame and flag token/usage candidates. |
+| 🟢 | `scripts/tool-compliance-experiment.mjs` | A/B over prompt variants for tool-call compliance. |
+| 🔴 | `admin-portal-dig.mjs` | Playwright-drive Microsoft 365 admin's Copilot usage page (`admin.microsoft.com/.../copilot/usage`); capture the API call that returns the dashboard data. |
+| 🔴 | `inputmethod-experiment.mjs` | Flip `inputMethod` and `experienceType` through plausible enum values and watch compliance/Disengaged rate. |
