@@ -27,6 +27,10 @@ const arg = (k, def = null) => {
 };
 const useAgent = !args.includes("--no-agent");
 const VARIANTS_FILTER = (arg("--variants", "") || "").split(",").filter(Boolean);
+// Number of independent runs per (variant, prompt) cell. n=1 gives directional
+// signal only — for any claim about latency or marginal compliance moves, use
+// n>=3 and read variance from the per-run output.
+const REPEAT = Math.max(1, parseInt(arg("--repeat", "1"), 10));
 
 const TS = new Date().toISOString().replace(/[:.]/g, "-");
 const OUT = join(process.cwd(), "scripts", "tool-compliance-out", TS);
@@ -135,44 +139,71 @@ let disengaged = 0;
 for (const variant of VARIANTS) {
   results[variant] = [];
   for (const p of PROMPTS) {
-    total++;
-    const session = new ModelSession({ useAgent });
-    let raw = "";
-    let throttle = null;
-    const t0 = Date.now();
-    try {
-      const stream = await session.run(formatVariant(variant, [{ role: "user", content: p.q }]), "m365-copilot");
-      for await (const d of stream) raw += d;
-      if (stream.fullText.length > raw.length) raw = stream.fullText;
-      throttle = stream.throttle;
-    } catch (e) {
-      raw = `<error: ${e.message}>`;
+    for (let rep = 0; rep < REPEAT; rep++) {
+      total++;
+      const session = new ModelSession({ useAgent });
+      let raw = "";
+      let throttle = null;
+      let scores = null;
+      let contentOrigin = null;
+      const t0 = Date.now();
+      try {
+        const stream = await session.run(formatVariant(variant, [{ role: "user", content: p.q }]), "m365-copilot");
+        for await (const d of stream) raw += d;
+        if (stream.fullText.length > raw.length) raw = stream.fullText;
+        throttle = stream.throttle;
+        scores = stream.scores;
+        contentOrigin = stream.contentOrigin;
+      } catch (e) {
+        raw = `<error: ${e.message}>`;
+      }
+      const verdict = classify(raw, p.expect);
+      if (verdict === "DISENGAGED") disengaged++;
+      const elapsed = Date.now() - t0;
+      const summary = { q: p.q, expect: p.expect, rep, verdict, elapsed_ms: elapsed, throttle, scores, contentOrigin, len: raw.length, raw: raw.slice(0, 240).replace(/\n/g, "\\n") };
+      results[variant].push(summary);
+      const dea = scores?.dea_violation;
+      const deaStr = typeof dea === "number" ? ` dea=${dea.toExponential(2)}` : "";
+      console.log(`[${variant.padEnd(16)}] rep${rep} ${verdict.padEnd(20)} ${elapsed}ms${deaStr} «${p.q.slice(0, 50)}»`);
+      await new Promise((r) => setTimeout(r, 1500)); // gentle pacing
     }
-    const verdict = classify(raw, p.expect);
-    if (verdict === "DISENGAGED") disengaged++;
-    const elapsed = Date.now() - t0;
-    const summary = { q: p.q, expect: p.expect, verdict, elapsed_ms: elapsed, throttle, len: raw.length, raw: raw.slice(0, 240).replace(/\n/g, "\\n") };
-    results[variant].push(summary);
-    console.log(`[${variant.padEnd(16)}] ${verdict.padEnd(20)} ${elapsed}ms «${p.q.slice(0, 60)}»`);
-    await new Promise((r) => setTimeout(r, 1500)); // gentle pacing
   }
 }
 
+function median(xs) { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; }
+function p95(xs) { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(s.length * 0.95))]; }
+
 const scoreboard = {};
 for (const variant of VARIANTS) {
-  const v = results[variant].map((r) => r.verdict);
-  const good = v.filter((x) => x.startsWith("OK_")).length;
-  scoreboard[variant] = { score: `${good}/${PROMPTS.length}`, verdicts: v };
+  const v = results[variant];
+  const good = v.filter((r) => r.verdict.startsWith("OK_")).length;
+  const latencies = v.map((r) => r.elapsed_ms);
+  const deas = v.map((r) => r.scores?.dea_violation).filter((n) => typeof n === "number");
+  scoreboard[variant] = {
+    n: v.length,
+    score: `${good}/${v.length}`,
+    pct: Math.round((good / v.length) * 100),
+    latency_ms: { median: median(latencies), p95: p95(latencies), min: Math.min(...latencies), max: Math.max(...latencies) },
+    dea_violation: deas.length ? { median: median(deas), p95: p95(deas), min: Math.min(...deas), max: Math.max(...deas), n: deas.length } : null,
+    verdicts: v.map((r) => r.verdict),
+  };
 }
 
 writeFileSync(join(OUT, "results.json"), JSON.stringify({
-  meta: { useAgent, prompts: PROMPTS.length, variants: VARIANTS, total, disengaged, elapsed_ms: Date.now() - start },
+  meta: {
+    useAgent, prompts: PROMPTS.length, variants: VARIANTS,
+    repeat: REPEAT, cells_per_variant: PROMPTS.length * REPEAT,
+    total, disengaged, elapsed_ms: Date.now() - start,
+    timestamp: new Date().toISOString(),
+  },
   scoreboard,
   details: results,
 }, null, 2));
 
 console.log("\n===== SCOREBOARD =====");
-for (const [variant, { score, verdicts }] of Object.entries(scoreboard)) {
-  console.log(`${variant.padEnd(16)} ${score}  [${verdicts.join(", ")}]`);
+console.log(`(n=${REPEAT} per cell, ${PROMPTS.length} cells × ${VARIANTS.length} variants)`);
+for (const [variant, s] of Object.entries(scoreboard)) {
+  const dea = s.dea_violation ? ` dea_med=${s.dea_violation.median.toExponential(2)}` : "";
+  console.log(`${variant.padEnd(16)} ${s.score}  med=${s.latency_ms.median}ms p95=${s.latency_ms.p95}ms${dea}`);
 }
-console.log(`\n[done] disengaged: ${disengaged}/${total}, output: ${OUT}`);
+console.log(`\n[done] disengaged: ${disengaged}/${total}, elapsed: ${Math.round((Date.now() - start) / 1000)}s, output: ${OUT}`);

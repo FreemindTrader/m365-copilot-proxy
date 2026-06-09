@@ -8,62 +8,308 @@ behaviour; this is the messy "we haven't shipped it yet" layer.
 Status legend: 🟢 confirmed · 🟡 partially tested · 🔴 untested guess ·
 ⚫ disproved.
 
+Findings should carry **n** (sample size), **service version under test**,
+and **falsification criteria** wherever they're claiming something stronger
+than "we eyeballed one run." See §M (Methods) for the experimental rig.
+
+**Contents**
+
+- §M — Methods (rig, raw-data pointers, caveats, falsification criteria)
+- §0 — Headline findings (F1…F8) with confidence ratings
+- §1 — Tool-call compliance hypotheses (most resolved June 9)
+- §2 — Token-usage search (mostly disproved or low-confidence)
+- §3 — "Context-window %" — what M365 actually enforces
+- §4 — Frame surface area we haven't fully mined
+- §5 — Disengaged-filter open questions
+- §6 — Cost / metering open questions
+- §7 — Probe backlog, ordered by info-gain ÷ cost
+
+---
+
+## M. Methods — how the June 9 2026 data was collected
+
+### Environment
+- **Tenant:** single, dev account `ao@re-zip.com` (tid `fa7f56d8-49c4-4327-b816-9a0eeaa273df`).
+- **Region:** Sydney back-end `substrate.office.com`; observed `locationInfo.country: DK`.
+- **M365 service version under test:** `1.0.03443.34112` (from `result.serviceVersion` in `type:2` stream items). Quote this when reproducing — Microsoft changes behaviour without notice.
+- **Tone:** `magic` (auto-routing) for all experiments unless noted.
+- **Agent:** Copilot Studio agent `m365-tool-agent-e1c3f258` (instructions hash from this commit). Same agent across all runs unless noted.
+- **Client:** the proxy at this repo's HEAD (with the changes documented in commits `75129b3`, `2350a2e`, `0538492`).
+- **Time window:** 2026-06-09 06:53 — 07:17 UTC. Single ~25-minute window — diurnal/load effects not controlled for.
+
+### Probes used
+| Script | Cost per run | What it measures |
+|---|---|---|
+| `scripts/frame-dump-probe.mjs` | 1 chat msg | Every key of every WS frame from one turn; flags token/usage-shaped values. |
+| `scripts/frame-dump-disengage.mjs` | 1 chat msg | Same but with a deliberately-Disengage-shaped prompt (12 tools + jailbreak framing). |
+| `scripts/tool-compliance-experiment.mjs` | `variants × prompts × --repeat` msgs | A/B of prompt variants. With `--repeat N`, reports median/p95 latency + dea_violation. |
+| `scripts/usage-endpoint-hunt.mjs` | 0 (GETs only) | Sweeps candidate REST URLs across Sydney/PP/BAP. |
+
+### Raw captures
+All gitignored under `scripts/*-out/<timestamp>/`. Per-experiment pointers in §0.
+A run can be re-played offline by walking `raw-frames.ndjson`.
+
+To capture frames from the **running proxy** (not just from probes), set
+`M365_DUMP_FRAMES=1`. Frames land in
+`~/.config/opencode-m365/frames/<requestId>.ndjson`, one file per turn,
+both `send` and `recv` directions. Useful for diagnosing a regression in
+production without re-running the bisect.
+
+### Caveats and threats to validity
+1. **n=1 per cell** on most claims. The tool-compliance scoreboard ran once
+   through 30 cells. Compliance counts (`5/5`, `3/5`) are descriptive of
+   that single run; latency means without `--repeat` are noise. Re-run with
+   `--repeat 3` (or more) before treating any number ±10% as load-bearing.
+2. **Single tenant, single tone, single agent version.** Findings about
+   compliance or scores may be artefacts of this account's licence
+   (`Starter`), region, or the specific server-side prompt our agent has
+   baked in. Cross-tenant reproduction is unverified.
+3. **Single short time window.** All runs landed inside ~25 minutes. We
+   haven't ruled out diurnal load effects on latency or Disengaged.
+4. **Order effects.** Each variant runs all its prompts before the next
+   variant. Account-level throttling (if any) would penalise late variants.
+   `tool_choice_req` was last in our run — its high latency could be partly
+   throttling, not the variant.
+5. **`magic` tone only.** The reasoning tones (`*_Reasoning`, `DeepLeo`
+   pipeline) historically misbehave with agents. None of our compliance
+   findings transfer to them without re-testing.
+6. **Disengaged didn't fire.** Our 12-tool jailbreak-framed probe didn't
+   trip the filter. Either the filter eased, our agent protects us, or
+   we'd need genuinely abusive content. The "9–10 orders of magnitude
+   safer" claim is calibrated only against the prompts we ran; the
+   threshold above which Disengaged fires is unknown.
+7. **Scoreboard verdict is a heuristic.** `OK_TOOL+stray(N)` counts as
+   compliant because the proxy strips the stray text downstream — but the
+   model is misbehaving. Don't read 5/5 as "perfectly compliant"; read it
+   as "useful output recoverable by the handler."
+8. **No cost model.** All experiments burned the same 600-msg-per-conv
+   quota. We ran ~40 chat turns in the dig — that's ~7% of one conv's
+   budget. Real bisects (`variants-bisect.mjs`) eat ~10 each.
+
+### Falsification criteria
+
+Use these as triggers to revisit:
+
+| Finding | Re-test if … |
+|---|---|
+| Few-shot is dead weight | A new tone/model is added and gets <100% compliance without the few-shot. |
+| `tool_choice:"required"` is harmful | Our prompt-rule translation changes (currently a flat sentence). |
+| `reply()` injection works | Mixed-tool-call output increases or `OK_REPLY` rate drops on prose. |
+| Scores reflect Disengaged proximity | We observe a `Disengaged` response with `dea_violation < 1e-3` (i.e., low score didn't predict safety). |
+| Sydney REST endpoints don't exist | A new probe with full browser headers gets non-empty 200/4xx (not empty 500). |
+| 600-msg-per-conv is the cap | We observe `maxNumUserMessagesInConversation != 600` on any conversation. |
+
 ---
 
 ## 0. Headline findings from the June 9 2026 dig
 
-These are the things we now know, with data:
+For each finding: claim · evidence (n + raw data) · confidence · caveats.
 
-1. **M365 sends classifier scores in every response.** `BotOffense` and
-   `dea_violation` arrive on every bot message in `update` and `type:2`
-   frames. The `dea_violation` component is the disengagement classifier —
-   surfacing it lets us measure proximity to Disengaged without actually
-   tripping it. Now plumbed through `usage.x_m365_dea_score`. Empirical
-   ranges from our captures:
+---
 
-   | Prompt shape | BotOffense | dea_violation |
-   |---|---|---|
-   | Clean prose ("pong") | 1.3 × 10⁻⁷ | 2.8 × 10⁻⁶ |
-   | Clean lean tool call | 2.2 × 10⁻¹³ | 2.1 × 10⁻⁸ |
-   | 12-tool jailbreak-framed | 1.2 × 10⁻³ | 2.2 × 10⁻³ |
+### F1 — M365 emits its own classifier scores on every bot message 🟢
 
-   Tool-shaped output is 9–10 orders of magnitude safer in the classifier's
-   view. Disengaged didn't fire at 2.2 × 10⁻³ — threshold is higher than
-   that; needs more aggressive probing to pin down.
+**Claim.** Every bot message in the `update` and `type:2` frames carries
+`scores: [{component, score}]` with at least two components: `BotOffense`
+(generic) and `dea_violation` (disengagement-eligibility). The `dea_violation`
+component correlates with the prompt's "jailbreak-ness" by 9–10 orders of
+magnitude.
 
-2. **The few-shot we were sending is dead weight.** Tool-compliance
-   experiment (June 9): `no_fewshot` variant got 5/5 perfect AND was 10%
-   faster than baseline. Removed from the default prompt path; restore with
-   `M365_KEEP_FEWSHOT=1`. ~250 tokens saved per request.
+**Evidence.** 3 single-prompt captures:
 
-3. **`tool_choice: "required"` is harmful.** It made the model call `bash()`
-   for "what is 7×8?" — 3/5 compliance vs. baseline 5/5. Do not propagate it
-   verbatim into the prompt as we currently do; treat it as advisory.
+| Prompt shape | BotOffense | dea_violation | n | raw |
+|---|---|---|---|---|
+| Clean prose ("pong") | 1.3 × 10⁻⁷ | 2.8 × 10⁻⁶ | 1 | `frame-dump-out/2026-06-09T06-53-50-370Z/raw-frames.ndjson` |
+| Clean lean tool call (3 tools, soft prompt) | 2.2 × 10⁻¹³ | 2.1 × 10⁻⁸ | 1 | `frame-dump-out/2026-06-09T06-57-43-254Z/raw-frames.ndjson` |
+| 12-tool + ALL-CAPS jailbreak framing | 1.2 × 10⁻³ | 2.2 × 10⁻³ | 1 | `frame-dump-out/2026-06-09T06-59-42-093Z-disengage/raw-frames.ndjson` |
 
-4. **The `reply()` synthetic tool works as intended.** The `with_reply`
-   variant routed both pure-prose questions through `reply()` calls (5/5
-   total compliance). Available behind `M365_INJECT_REPLY_TOOL=1`.
+Repeat-sample from the compliance experiment (n=5, same baseline variant)
+shows `dea_violation` between 2.5e-7 and ~5e-7 — stable to within ~2×, so
+the order-of-magnitude separation between prompt shapes is robust under
+sampling noise.
 
-5. **No public REST endpoint exposes token usage.** All 24 candidate URLs
-   across Sydney, Power Platform, and BAP returned 500 (Sydney) or 404
-   (PP/BAP). The Sydney service appears to deny unfamiliar paths with empty
-   500s — possibly recoverable by sending the full browser header set, but
-   that's another probe.
+**Confidence.** High that scores exist and roughly track prompt risk.
+Low that the absolute thresholds we measured generalise (single tenant,
+single tone).
 
-6. **Disengaged didn't fire ONCE in 30 chat turns** including 12-tool +
-   jailbreak-framed prompts. Either Microsoft eased the filter, our agent's
-   server-side prompt protects us, or we need genuinely abusive content to
-   trip it. Worth a calibration probe.
+**Falsification.** Score absent from any new frame capture, OR a Disengaged
+response observed with `dea_violation < 1e-3`.
 
-7. **New fields surfaced through the runtime** — `scores`, `turnCount`,
-   `turnState`, `contentOrigin`, `messageType`, `messageId`. All now in the
-   `usage{}` extension block of every chat completion.
+**Now exposed.** `usage.x_m365_dea_score`, `usage.x_m365_offense_score`,
+`usage.x_m365_classifier_scores` (whole map). Code:
+`packages/proxy-lib/src/handler.ts::buildUsage`.
 
-8. **Untested but interesting:** `result.serviceVersion`,
-   `conversationExpiryTime` (≈30 days), `conversationTransferToken` (a
-   base64 blob whose decoded prefix is `{"type":"FullConversation",...}` —
-   maybe a way to migrate a conversation across hosts/sessions and
-   side-step the 600-message cap).
+---
+
+### F2 — The few-shot in our tool prompt is dead weight 🟢
+
+**Claim.** Removing the few-shot example block from the per-request prompt
+does not measurably hurt tool-call compliance and saves latency.
+
+**Evidence.** `tool-compliance-experiment.mjs` June 9 run, **n=1 per cell**,
+5 prompts × 6 variants = 30 cells total.
+
+| Variant | Compliance | Mean latency¹ |
+|---|---|---|
+| baseline (with few-shot) | 5/5 | 5388 ms |
+| **no_fewshot** | 5/5 | **4893 ms** |
+
+¹ Mean across 5 single-shot runs. **Single-sample latency — error bars unknown.**
+
+**Confidence.** Medium on the "doesn't hurt compliance" claim (n=5 is enough
+to spot a big regression; not enough for marginal ones). Low on the
+"~10% faster" claim — could be order-of-trial effect (no_fewshot ran third,
+when no throttling had built up).
+
+**Falsification.** Re-run with `--repeat 5` and randomised variant ordering.
+If `no_fewshot` is statistically slower or scores <100%, restore the
+few-shot.
+
+**Now applied.** Few-shot off by default; restore with `M365_KEEP_FEWSHOT=1`.
+Code: `packages/core/src/tools.ts::formatMessages`.
+
+**Raw data.** `tool-compliance-out/2026-06-09T07-04-46-817Z/results.json`.
+
+---
+
+### F3 — `tool_choice: "required"` is actively harmful 🟢
+
+**Claim.** Translating `tool_choice: "required"` into a per-prompt rule
+("You MUST call at least one tool") causes the model to call `bash()` for
+non-actionable prose questions.
+
+**Evidence.** Same run as F2. Variant `tool_choice_req`, n=1 per prompt:
+- 3/5 useful responses (down from 5/5 baseline)
+- "what is 7*8" → `bash()` call (FALSE_TOOL)
+- "largest planet" → `bash()` call (FALSE_TOOL)
+
+**Confidence.** High on the failure mode (2/2 prose questions broke). Low on
+the magnitude — only 2 prose prompts in the suite.
+
+**Falsification.** Repeat with 5+ prose prompts at `--repeat 3`. If
+FALSE_TOOL rate stays >20%, claim holds.
+
+**Action.** Documented; no code change. We still pass the OpenAI semantics
+through as advisory text. We don't enforce it server-side.
+
+---
+
+### F4 — Synthetic `reply()` tool routes prose through the tool channel 🟢
+
+**Claim.** Injecting a `reply(text)` synthetic tool makes the model emit
+prose answers as `reply()` calls (which the handler converts back to plain
+text).
+
+**Evidence.** Same run as F2, variant `with_reply`, n=1 per prompt:
+- 3/3 tool prompts → correct tool call
+- 2/2 prose prompts → `reply(...)` call (OK_REPLY)
+
+**Confidence.** Medium — works on this run, but only n=1 for each prose
+prompt. The most actionable benefit ("never breaks the agent loop with
+stray prose") is a 1-trial observation.
+
+**Falsification.** Run `--variants with_reply --repeat 5` on a suite of 10
+prose prompts. If the prose→`reply()` route fails >10%, claim weakens.
+
+**Now available.** `M365_INJECT_REPLY_TOOL=1`. Code:
+`packages/core/src/tools.ts::maybeInjectReplyTool`.
+
+---
+
+### F5 — No public REST endpoint exposes token usage 🟡
+
+**Claim.** Token-count data is not reachable via any obvious REST sibling
+endpoint of the chat WS.
+
+**Evidence.** `usage-endpoint-hunt.mjs` June 9 run, 24 URLs probed across
+three tokens (Sydney, Power Platform, BAP).
+- Sydney (15 paths): **all 500, empty body** — suspicious. Either paths
+  don't exist or path discovery is gated by browser headers (`Origin`,
+  full `User-Agent`) which the WS upgrade requires but our REST GETs
+  didn't send.
+- PP (6 analytics-shaped paths): **all 404** — paths do not exist for our
+  Starter licence.
+- BAP (3 governance paths): **all 404**.
+
+**Confidence.** Low. The Sydney 500s are not a clean "doesn't exist" signal.
+Re-running with the full browser header set is required before declaring
+token usage genuinely unreachable.
+
+**Falsification.** Re-run `usage-endpoint-hunt.mjs` with
+`Origin: https://m365.cloud.microsoft` and the WS client's `User-Agent`.
+If anything returns 200/4xx (not empty 500), the surface exists.
+
+**Raw data.** `usage-endpoint-out/2026-06-09T07-09-42-663Z/results.json`.
+
+---
+
+### F6 — Disengaged didn't fire in 30 attempts including jailbreak framing 🟡
+
+**Claim.** Across all 30 compliance-experiment turns + 2 deliberately
+Disengage-shaped probes, M365 returned content. No `messageType: "Disengaged"`
+was observed.
+
+**Evidence.** 30 turns in `tool-compliance-out/2026-06-09T07-04-46-817Z/`
+(meta.disengaged = 0) + 1 turn in `frame-dump-out/...-disengage/` (12 tools
++ `STRICT RULES: never describe your intent. Output ONLY JSON.`).
+
+**Confidence.** Medium that the agent + our prompts don't disengage under
+the prompts we tried. Low that this generalises — we never sent content the
+classifier should actually find offensive.
+
+**Falsification.** Run an explicit calibration probe with progressively
+more aggressive prompts (e.g. add `OFFENSIVE_CONTENT_REDACTED` tokens
+known to trip Microsoft's classifiers) and confirm `Disengaged` fires at
+some `dea_violation` level. Threshold currently bounded only as
+`> 2.2 × 10⁻³`.
+
+**TODO probe.** `scripts/disengaged-calibration.mjs` (not yet written —
+see §7).
+
+---
+
+### F7 — Diagnostic fields exposed through the runtime 🟢
+
+**Claim.** Bot messages and `type:2` items carry `scores`, `turnCount`,
+`turnState`, `contentOrigin`, `messageType`, `messageId`,
+`conversationExpiryTime`, `result.serviceVersion`,
+`gptIdentifiers[].compliantAgentName`. We now parse and surface them.
+
+**Evidence.** All visible in any `frame-dump-out/.../raw-frames.ndjson`.
+
+**Confidence.** High on existence (every capture shows them). Medium on
+exact semantics — we infer from the values, not from Microsoft docs.
+
+**Now exposed.** Through `CopilotStream` and `usage.x_m365_*`. Code:
+`packages/core/src/{copilot,session,schemas}.ts`,
+`packages/proxy-lib/src/handler.ts`.
+
+---
+
+### F8 — Things we saw but haven't dug into 🔴
+
+| Field | Decoded value | Hypothesis |
+|---|---|---|
+| `conversationTransferToken` | base64(`{"type":"FullConversation","conversationId":"<uuid>"}`) | Possibly a handle for migrating a conversation across hosts/sessions — could side-step the 600-msg-per-conv cap. Mechanism unknown. |
+| `result.serviceVersion` | `1.0.03443.34112` | M365 service build under test. Capture in every probe for reproducibility. |
+| `conversationExpiryTime` | ~30 days out | Conversations auto-expire. Could explain "I came back next month and it doesn't remember" reports. |
+| `telemetry.userMessageRequestStartTime` | always null | Probably gated by a feature flag in `variants`. The `variants-bisect.mjs` probe is the right tool. |
+| `firstNewMessageIndex` | `1` in our captures | Could power smarter delta sends — only forward messages from this index. |
+
+---
+
+### Summary as one table
+
+| ID | Claim | Conf | n | Action shipped |
+|---|---|---|---|---|
+| F1 | Classifier scores in responses | High | 8 captures, 3 prompt shapes | Score in `usage{}` |
+| F2 | Few-shot is dead weight | Med | 5×1 | Off by default |
+| F3 | `tool_choice:"required"` is harmful | High | 2×1 prose | Documented; no enforcement change |
+| F4 | `reply()` injection routes prose | Med | 2×1 prose | `M365_INJECT_REPLY_TOOL=1` |
+| F5 | No REST token-usage endpoint | Low | 24 URLs | None — needs re-probe with headers |
+| F6 | Disengaged didn't fire | Med | 32 turns | None — needs calibration probe |
+| F7 | Diagnostic fields available | High | every turn | Parsed & surfaced |
+| F8 | Unexplored fields | Untested | n/a | TODO probes |
 
 ---
 
@@ -71,7 +317,8 @@ These are the things we now know, with data:
 
 The agent's server-side system prompt is the only confirmed lever (
 [`m365-copilot-api.md`](m365-copilot-api.md) §10). Open questions about how
-to nudge it further:
+to nudge it further. **All results are n=1 per cell** unless re-run with
+`--repeat`; see §M caveat 1.
 
 | # | Hypothesis | Status | Probe |
 |---|---|---|---|
@@ -191,13 +438,26 @@ without code changes.
 
 ---
 
-## 7. New probes to write
+## 7. Probe backlog (ordered by expected information gain ÷ cost)
 
-| Status | Probe | What it does |
-|---|---|---|
-| 🟢 | `scripts/usage-endpoint-hunt.mjs` | Sweep Sydney/PP/BAP REST endpoints for token usage. |
-| 🟢 | `scripts/variants-bisect.mjs` | Bisect the 40-flag `VARIANTS` list to find which one(s) control Disengaged / streaming mode. |
-| 🟢 | `scripts/frame-dump-probe.mjs` | Dump every field of every frame and flag token/usage candidates. |
-| 🟢 | `scripts/tool-compliance-experiment.mjs` | A/B over prompt variants for tool-call compliance. |
-| 🔴 | `admin-portal-dig.mjs` | Playwright-drive Microsoft 365 admin's Copilot usage page (`admin.microsoft.com/.../copilot/usage`); capture the API call that returns the dashboard data. |
-| 🔴 | `inputmethod-experiment.mjs` | Flip `inputMethod` and `experienceType` through plausible enum values and watch compliance/Disengaged rate. |
+| Status | Probe | What it does | Cost | Confirms / falsifies |
+|---|---|---|---|---|
+| 🟢 | `scripts/usage-endpoint-hunt.mjs` | Sweep Sydney/PP/BAP REST endpoints for token usage. | 0 msgs (GETs) | F5 (currently low-confidence) |
+| 🟢 | `scripts/variants-bisect.mjs` | Bisect the 40-flag `VARIANTS` list to find which one(s) control Disengaged / streaming mode. | ~10 msgs/target | F6, §5.2 |
+| 🟢 | `scripts/frame-dump-probe.mjs` | Dump every field of every frame and flag token/usage candidates. | 1 msg | Catch newly-added M365 fields |
+| 🟢 | `scripts/frame-dump-disengage.mjs` | Targeted Disengage-shaped probe. | 1 msg | F6 |
+| 🟢 | `scripts/tool-compliance-experiment.mjs --repeat N` | Statistical version of the compliance A/B. | 30N msgs | F2, F3, F4 with real error bars |
+| 🔴 | `disengaged-calibration.mjs` | Progressively more aggressive prompts to find the `dea_violation` threshold where Disengaged fires. | ~10 msgs | Bound F6 to a real threshold |
+| 🔴 | `usage-endpoint-hunt-v2.mjs` | Same as v1 but with full browser headers (Origin/User-Agent/Accept-Language). | 0 msgs (GETs) | F5 properly |
+| 🔴 | `inputmethod-experiment.mjs` | Flip `inputMethod` (`Keyboard`/`Voice`/`Agent`?) and `experienceType` enums, watch dea_violation. | ~5 msgs | §1.7, §1.8 |
+| 🔴 | `tone-comparison.mjs` | Repeat the compliance experiment across every `MODEL_TONES` value to test whether F2–F4 generalise off `magic`. | ~50 msgs | Generalisation of F2-F4 |
+| 🔴 | `transfer-token-probe.mjs` | Try to POST `conversationTransferToken` to various Sydney paths to see if a conversation can be migrated. | ~5 msgs | F8 (the 600-msg-cap workaround) |
+| 🔴 | `admin-portal-dig.mjs` | Playwright-drive Microsoft 365 admin's Copilot usage page; capture the API call that returns the dashboard data. | 0 msgs (UI only) | F5 |
+
+### Recommended next session
+
+1. **disengaged-calibration.mjs** (cheap, bounds the most useful metric).
+2. **tool-compliance with `--repeat 5`** (turns F2's "10% faster" into a
+   real comparison — currently below the noise floor).
+3. **usage-endpoint-hunt-v2.mjs** with full browser headers (F5
+   re-investigation).
