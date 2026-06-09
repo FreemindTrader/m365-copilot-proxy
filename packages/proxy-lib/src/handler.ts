@@ -170,6 +170,8 @@ export async function handleChatCompletion(
   let lastThrottle: { current: number; max: number } | null = null;
   let lastContentOrigin: string | null | undefined;
   let lastMessageType: string | null | undefined;
+  let lastScores: Record<string, number> | null | undefined;
+  let lastTurnCount: number | null | undefined;
 
   async function runBuffered(): Promise<{ fullText: string } | { error: Response }> {
     let agentRefreshed = false;
@@ -195,6 +197,8 @@ export async function handleChatCompletion(
       lastThrottle = copilotStream.throttle;
       lastContentOrigin = copilotStream.contentOrigin;
       lastMessageType = copilotStream.messageType;
+      lastScores = copilotStream.scores;
+      lastTurnCount = copilotStream.turnCount;
 
       if (copilotStream.hasContent || fullText.length > 0) {
         return { fullText };
@@ -280,7 +284,7 @@ export async function handleChatCompletion(
           return jsonResponse(200, {
             id: completionId, object: "chat.completion", created, model,
             choices: [{ index: 0, message: { role: "assistant", content: replyText }, finish_reason: "stop" }],
-            usage: buildUsage(lastThrottle, lastContentOrigin, lastMessageType),
+            usage: buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount),
           });
         }
       }
@@ -316,7 +320,7 @@ export async function handleChatCompletion(
             },
             finish_reason: "tool_calls",
           }],
-          usage: buildUsage(lastThrottle, lastContentOrigin, lastMessageType),
+          usage: buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount),
         });
       }
     } else {
@@ -326,7 +330,7 @@ export async function handleChatCompletion(
         return jsonResponse(200, {
           id: completionId, object: "chat.completion", created, model,
           choices: [{ index: 0, message: { role: "assistant", content: fullText }, finish_reason: "stop" }],
-          usage: buildUsage(lastThrottle, lastContentOrigin, lastMessageType),
+          usage: buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount),
         });
       }
     }
@@ -345,7 +349,7 @@ export async function handleChatCompletion(
     return jsonResponse(200, {
       id: completionId, object: "chat.completion", created, model,
       choices: [{ index: 0, message: { role: "assistant", content: result.fullText }, finish_reason: "stop" }],
-      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      usage: buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount),
     });
   }
 }
@@ -366,6 +370,8 @@ function buildUsage(
   throttle: { current: number; max: number } | null,
   contentOrigin?: string | null,
   messageType?: string | null,
+  scores?: Record<string, number> | null,
+  turnCount?: number | null,
 ): Record<string, unknown> {
   const base: Record<string, unknown> = {
     prompt_tokens: 0,
@@ -380,6 +386,17 @@ function buildUsage(
   }
   if (contentOrigin) base.x_m365_content_origin = contentOrigin;
   if (messageType) base.x_m365_message_type = messageType;
+  if (typeof turnCount === "number") base.x_m365_turn_count = turnCount;
+  // Disengaged-classifier scores. Empirically: clean tool calls sit at
+  // ~1e-13 / ~1e-8, jailbreak-shaped prompts climb to ~1e-3 / ~1e-3. The
+  // `dea_violation` component is the one that actually correlates with the
+  // Disengaged filter firing — surface that explicitly so clients can monitor
+  // their proximity to the threshold.
+  if (scores) {
+    base.x_m365_classifier_scores = scores;
+    if (typeof scores.dea_violation === "number") base.x_m365_dea_score = scores.dea_violation;
+    if (typeof scores.BotOffense === "number") base.x_m365_offense_score = scores.BotOffense;
+  }
   return base;
 }
 

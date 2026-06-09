@@ -151,6 +151,11 @@ export class CopilotSession {
       let contentOrigin: string | null = null;
       let messageType: string | null = null;
       let messageId: string | null = null;
+      // Highest per-component score across all messages this turn. The most
+      // recent score isn't necessarily the most informative — the worst one is.
+      const maxScores: Record<string, number> = {};
+      let turnCountServer: number | null = null;
+      let turnState: string | null = null;
       let onDelta: ((text: string) => void) | null = null;
       let onDone: (() => void) | null = null;
       let onError: ((err: Error) => void) | null = null;
@@ -173,6 +178,15 @@ export class CopilotSession {
         },
         get messageId() {
           return messageId;
+        },
+        get scores() {
+          return Object.keys(maxScores).length ? { ...maxScores } : null;
+        },
+        get turnCount() {
+          return turnCountServer;
+        },
+        get turnState() {
+          return turnState;
         },
 
         [Symbol.asyncIterator]() {
@@ -435,6 +449,30 @@ export class CopilotSession {
         }
 
         if (base.type === 2) {
+          // Stream item — the FINAL state of the conversation, with authoritative
+          // throttle/turnCount/scores. Mine it before closing.
+          const item = (raw as { item?: { messages?: any[]; throttling?: any; turnState?: string } }).item;
+          if (item) {
+            if (item.turnState) turnState = item.turnState;
+            if (item.throttling) {
+              throttleInfo = { current: item.throttling.numUserMessagesInConversation, max: item.throttling.maxNumUserMessagesInConversation };
+            }
+            for (const m of item.messages ?? []) {
+              if (m.author !== "bot") continue;
+              if (m.contentOrigin) contentOrigin = m.contentOrigin;
+              if (m.messageType) messageType = m.messageType;
+              if (m.messageId) messageId = m.messageId;
+              if (typeof m.turnCount === "number") turnCountServer = m.turnCount;
+              if (Array.isArray(m.scores)) {
+                for (const s of m.scores) {
+                  if (typeof s?.component !== "string" || typeof s?.score !== "number") continue;
+                  if (!(s.component in maxScores) || s.score > maxScores[s.component]) {
+                    maxScores[s.component] = s.score;
+                  }
+                }
+              }
+            }
+          }
           ws.close();
           return;
         }
@@ -459,6 +497,15 @@ export class CopilotSession {
                   if (m.contentOrigin) contentOrigin = m.contentOrigin;
                   if (m.messageType) messageType = m.messageType;
                   if (m.messageId) messageId = m.messageId;
+                  if (m.scores) {
+                    for (const s of m.scores) {
+                      if (!(s.component in maxScores) || s.score > maxScores[s.component]) {
+                        maxScores[s.component] = s.score;
+                      }
+                    }
+                  }
+                  if (typeof m.turnCount === "number") turnCountServer = m.turnCount;
+                  if (m.turnState) turnState = m.turnState;
                 }
                 if (m.author === "bot" && m.text && !m.messageType) {
                   receivedContent = true;

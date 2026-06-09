@@ -18,6 +18,18 @@ export const ThrottlingInfo = z.object({
   numLongDocSummaryUserMessagesInConversation: z.number(),
 });
 
+/** A single classifier score on a bot message. Observed components include:
+ *  - `BotOffense`         — generic offensive-content classifier
+ *  - `dea_violation`      — "disengaged-eligible answer" classifier; this is
+ *                           the one that actually correlates with Disengaged.
+ *  Both arrive as very small floats (1e-13 … 1e-3 in our captures). Disengaged
+ *  itself triggers above some threshold > ~2e-3 we haven't yet pinpointed.
+ *  See `docs/hypotheses.md §5`. */
+export const ClassifierScore = z.object({
+  component: z.string(),
+  score: z.number(),
+});
+
 export const BotMessage = z.object({
   text: z.string(),
   author: z.literal("bot"),
@@ -31,6 +43,13 @@ export const BotMessage = z.object({
   adaptiveCards: z.array(z.any()).optional(),
   sourceAttributions: z.array(z.any()).optional(),
   contentOrigin: z.string().optional(),
+  // Per-message classifier scores. Present on `update` deltas + the final
+  // `type:2` stream item; absent on partial streaming chunks.
+  scores: z.array(ClassifierScore).optional(),
+  // Authoritative server-side turn count for this conversation.
+  turnCount: z.number().optional(),
+  // `Completed` / others (only observed `Completed` so far).
+  turnState: z.string().optional(),
   suggestedResponses: z
     .array(
       z.object({

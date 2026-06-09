@@ -114,6 +114,13 @@ export interface CopilotStream {
   messageType?: string | null;
   /** Server-assigned bot message id, useful for telemetry correlation. */
   messageId?: string | null;
+  /** Per-message classifier scores from M365 (BotOffense / dea_violation).
+   *  Highest values across the response. Drives the "how close to Disengaged are we" metric. */
+  scores?: Record<string, number> | null;
+  /** Authoritative server-side turn count for this conversation. */
+  turnCount?: number | null;
+  /** `Completed` etc. */
+  turnState?: string | null;
 }
 
 export interface CopilotChatOptions {

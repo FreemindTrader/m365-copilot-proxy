@@ -217,7 +217,16 @@ export function formatMessages(
 
     // Few-shot built from the client's real tools (see fewShotExample). No
     // chit-chat example (taught prose answers), no batching (taught plan-dumps).
-    parts.push(...fewShotExample(effectiveTools));
+    //
+    // Measured useless: the `no_fewshot` variant of
+    // `scripts/tool-compliance-experiment.mjs` (June 2026) hit 5/5 compliance
+    // AND was the fastest variant — the agent's server-side system prompt
+    // alone is doing the work, the few-shot just spends tokens for no win.
+    // Off by default; set `M365_KEEP_FEWSHOT=1` to restore if a future M365
+    // change makes it useful again.
+    if (process.env.M365_KEEP_FEWSHOT) {
+      parts.push(...fewShotExample(effectiveTools));
+    }
   }
 
   for (const m of messages) {

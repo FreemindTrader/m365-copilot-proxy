@@ -10,6 +10,63 @@ Status legend: 🟢 confirmed · 🟡 partially tested · 🔴 untested guess ·
 
 ---
 
+## 0. Headline findings from the June 9 2026 dig
+
+These are the things we now know, with data:
+
+1. **M365 sends classifier scores in every response.** `BotOffense` and
+   `dea_violation` arrive on every bot message in `update` and `type:2`
+   frames. The `dea_violation` component is the disengagement classifier —
+   surfacing it lets us measure proximity to Disengaged without actually
+   tripping it. Now plumbed through `usage.x_m365_dea_score`. Empirical
+   ranges from our captures:
+
+   | Prompt shape | BotOffense | dea_violation |
+   |---|---|---|
+   | Clean prose ("pong") | 1.3 × 10⁻⁷ | 2.8 × 10⁻⁶ |
+   | Clean lean tool call | 2.2 × 10⁻¹³ | 2.1 × 10⁻⁸ |
+   | 12-tool jailbreak-framed | 1.2 × 10⁻³ | 2.2 × 10⁻³ |
+
+   Tool-shaped output is 9–10 orders of magnitude safer in the classifier's
+   view. Disengaged didn't fire at 2.2 × 10⁻³ — threshold is higher than
+   that; needs more aggressive probing to pin down.
+
+2. **The few-shot we were sending is dead weight.** Tool-compliance
+   experiment (June 9): `no_fewshot` variant got 5/5 perfect AND was 10%
+   faster than baseline. Removed from the default prompt path; restore with
+   `M365_KEEP_FEWSHOT=1`. ~250 tokens saved per request.
+
+3. **`tool_choice: "required"` is harmful.** It made the model call `bash()`
+   for "what is 7×8?" — 3/5 compliance vs. baseline 5/5. Do not propagate it
+   verbatim into the prompt as we currently do; treat it as advisory.
+
+4. **The `reply()` synthetic tool works as intended.** The `with_reply`
+   variant routed both pure-prose questions through `reply()` calls (5/5
+   total compliance). Available behind `M365_INJECT_REPLY_TOOL=1`.
+
+5. **No public REST endpoint exposes token usage.** All 24 candidate URLs
+   across Sydney, Power Platform, and BAP returned 500 (Sydney) or 404
+   (PP/BAP). The Sydney service appears to deny unfamiliar paths with empty
+   500s — possibly recoverable by sending the full browser header set, but
+   that's another probe.
+
+6. **Disengaged didn't fire ONCE in 30 chat turns** including 12-tool +
+   jailbreak-framed prompts. Either Microsoft eased the filter, our agent's
+   server-side prompt protects us, or we need genuinely abusive content to
+   trip it. Worth a calibration probe.
+
+7. **New fields surfaced through the runtime** — `scores`, `turnCount`,
+   `turnState`, `contentOrigin`, `messageType`, `messageId`. All now in the
+   `usage{}` extension block of every chat completion.
+
+8. **Untested but interesting:** `result.serviceVersion`,
+   `conversationExpiryTime` (≈30 days), `conversationTransferToken` (a
+   base64 blob whose decoded prefix is `{"type":"FullConversation",...}` —
+   maybe a way to migrate a conversation across hosts/sessions and
+   side-step the 600-message cap).
+
+---
+
 ## 1. Tool-call compliance — what actually moves the needle?
 
 The agent's server-side system prompt is the only confirmed lever (
@@ -18,14 +75,14 @@ to nudge it further:
 
 | # | Hypothesis | Status | Probe |
 |---|---|---|---|
-| 1.1 | Injecting a synthetic `reply(text)` tool makes every turn a tool call, eliminating the "answered in prose, broke the loop" failure mode. | 🟡 implemented, gated by `M365_INJECT_REPLY_TOOL=1`. Test with `scripts/tool-compliance-experiment.mjs`. | `--variants with_reply,baseline` |
-| 1.2 | The current ALL-CAPS instructions trip jailbreak heuristics. A softer reformulation gets the same compliance with less Disengaged risk. | 🔴 variant in the experiment harness. | `--variants no_caps,baseline` |
-| 1.3 | The few-shot helps for reasoning-derailed tones, but adds tokens to the prompt for everyone. Without it, baseline tones might already comply. | 🔴 variant `no_fewshot`. | same |
-| 1.4 | If the agent enforces the format server-side, the per-request prompt only needs `<tools>` + the user message. The strict rules block is redundant noise (and Disengaged-risk). | 🔴 variant `minimal`. | same |
-| 1.5 | `tool_choice: "required"` (translated into a prompt rule) flips behaviour vs. `auto` — confirms whether the model can answer in prose at all. | 🔴 variant `tool_choice_req`. | same |
-| 1.6 | Disengaged threshold scales with tool **count**, not total prompt size. Halving descriptions but keeping 12 tools = still disengages. | 🔴 — needs a token-budget probe. | (to write) |
-| 1.7 | `inputMethod: "Agent"` (instead of `"Keyboard"`) might bypass a "chat assistant" classifier that biases toward prose. | 🔴 — single field flip; cheap probe. | `scripts/frame-dump-probe.mjs --allowed-extra` is the lab; add a `--input-method` flag if it pans out. |
-| 1.8 | `experienceType: "Agent"` / `"BizChatAgent"` / `"Programmatic"` may exist as an enum value that shifts routing. | 🔴 — same cheap probe. | study `studio-dig.mjs` capture for the values the real UI sends. |
+| 1.1 | Injecting a synthetic `reply(text)` tool makes every turn a tool call, eliminating the "answered in prose, broke the loop" failure mode. | 🟢 **Confirmed** (June 9). 5/5 compliance, both prose Qs went through `reply()` cleanly. Gated by `M365_INJECT_REPLY_TOOL=1`. | `--variants with_reply,baseline` |
+| 1.2 | A softer (no ALL-CAPS) instruction set gets the same compliance. | 🟡 **Equivalent compliance** (5/5) but introduced stray text on 2/3 of tool calls. Not worth the swap. | done |
+| 1.3 | The few-shot helps for reasoning-derailed tones, but adds tokens to the prompt for everyone. Without it, baseline tones might already comply. | 🟢 **Disproved usefulness** (June 9). 5/5 compliance AND fastest variant (4.9s vs 5.4s baseline). **Few-shot removed from default path**, restore with `M365_KEEP_FEWSHOT=1`. | done |
+| 1.4 | If the agent enforces the format server-side, the per-request prompt only needs `<tools>` + the user message. The strict rules block is redundant noise (and Disengaged-risk). | 🟢 **Confirmed** (June 9). `minimal` got 5/5. The agent's server-side prompt is load-bearing; the rest is mostly hedge. We could go further on prompt simplification. | done |
+| 1.5 | `tool_choice: "required"` (translated into a prompt rule) flips behaviour vs. `auto` — confirms whether the model can answer in prose at all. | ⚫ **Disproved as a win** (June 9). Drops to 3/5 — forces invalid `bash()` calls on "what is 7×8?" type prose. Active foot-gun; honor the OpenAI semantics defensively. | done |
+| 1.6 | Disengaged threshold scales with tool **count**, not total prompt size. Halving descriptions but keeping 12 tools = still disengages. | 🟡 **Untestable as written** (June 9) — 12 tools no longer disengage at all. Need a calibration probe to find the new threshold. | (TODO: disengaged-calibration probe) |
+| 1.7 | `inputMethod: "Agent"` (instead of `"Keyboard"`) might bypass a "chat assistant" classifier that biases toward prose. | 🔴 still untested. Cheap single-field flip — combine with score capture to see if it lowers `dea_violation`. | `scripts/frame-dump-probe.mjs --allowed-extra` is the lab; add a `--input-method` flag if it pans out. |
+| 1.8 | `experienceType: "Agent"` / `"BizChatAgent"` / `"Programmatic"` may exist as an enum value that shifts routing. | 🔴 still untested. Same cheap probe. | study `studio-dig.mjs` capture for the values the real UI sends. |
 
 ---
 
@@ -40,15 +97,15 @@ to nudge it further:
 - The OpenAI WebSocket API analog returns full token usage; M365's SignalR
   protocol does **not** in any frame we currently capture.
 
-### What we should hunt for (🔴)
-| # | Hypothesis | How to test |
+### What we hunted (June 9 2026)
+| # | Hypothesis | Result |
 |---|---|---|
-| 2.1 | Some frames carry a `usage` / `tokenCount` / `contextLength` field but we don't parse them. | `scripts/frame-dump-probe.mjs` — dumps EVERY field and surfaces token-related candidates by key/value regex. |
-| 2.2 | Adding `TokenUsage` / `Telemetry` / `Diagnostics` / `Usage` to `allowedMessageTypes` unlocks an extra frame type. | The probe already requests all of these. If no new `messageType` appears, M365 ignores them silently. |
-| 2.3 | `DeveloperLogs` (already allowed but never observed in traffic) needs a paired feature flag in `variants` or `optionsSets` to switch on. | Try `feature.EnableDeveloperLogs`, `feature.DeveloperMode`, etc. via `--allowed-extra` + variants edit. |
-| 2.4 | A REST sibling endpoint under `substrate.office.com/sydney/v1/me/usage` (or similar) returns aggregate token usage. Tenant admin UI almost certainly has this — find what endpoint it calls. | New probe: drive the M365 admin/usage UI with Playwright, capture API. |
-| 2.5 | The Power Platform `analytics` API (`<env>/analytics/...`) has per-agent metrics. | Tokens needed: same Power Platform scope we already have. New probe. |
-| 2.6 | The `m365.cloud.microsoft` web UI surfaces a "messages remaining" badge somewhere — that badge has to source from a frame we already see. Worth tracing in devtools. | Manual. |
+| 2.1 | Some frames carry a `usage` / `tokenCount` / `contextLength` field but we don't parse them. | ⚫ **Disproved** — `frame-dump-probe.mjs` walked every key of every frame in the typical-conversation flow. No `token*`, `usage*`, `contextLength*`, `cost*`, `metering*` keys found. What we DID find (and now parse): `scores`, `turnCount`, `turnState`, `conversationExpiryTime`, `conversationTransferToken`, `result.serviceVersion`, `gptIdentifiers[].compliantAgentName`. |
+| 2.2 | Adding `TokenUsage` / `Telemetry` / `Diagnostics` / `Usage` to `allowedMessageTypes` unlocks an extra frame type. | ⚫ **Disproved** — probe asked for all of them. M365 silently ignored unknown types. |
+| 2.3 | `DeveloperLogs` (already allowed but never observed in traffic) needs a paired feature flag in `variants` or `optionsSets` to switch on. | 🔴 Still untested. The `variants-bisect.mjs` probe is the right tool. |
+| 2.4 | A REST sibling endpoint under `substrate.office.com/sydney/v1/me/usage` (or similar) returns aggregate token usage. | 🟡 **Possibly** — every Sydney URL we tried returns empty 500 (vs PP/BAP cleanly 404ing). Sydney might gate path discovery on the full browser header set the WS endpoint requires. Probe with full Origin/User-Agent next. |
+| 2.5 | The Power Platform `analytics` API (`<env>/analytics/...`) has per-agent metrics. | ⚫ **404** on every analytics path. |
+| 2.6 | The `m365.cloud.microsoft` web UI surfaces a "messages remaining" badge somewhere — that badge has to source from a frame we already see. Worth tracing in devtools. | 🔴 Manual; not done yet. |
 
 ### What we should surface today (🟢 implemented)
 The **conversation quota** is the cleanest proxy for "context-window

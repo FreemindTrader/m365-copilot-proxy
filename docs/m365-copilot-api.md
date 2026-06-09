@@ -195,6 +195,17 @@ Concatenate `writeAtCursor` across deltas → the streamed answer.
 ```
 **Only treat a bot message as content when `messageType` is absent.** Messages *with* a `messageType` are control/meta (see below). We keep whichever of (delta-accumulated) vs (message snapshot) text is longer.
 
+The final-state bot message (in either the last update frame or the `type:2` stream item) also carries:
+
+| Field | What it is | Useful for |
+|---|---|---|
+| `scores: [{ component, score }]` | Per-message classifier scores. Known components: `BotOffense`, `dea_violation`. Values are tiny floats; `dea_violation` correlates with Disengaged firing. | Surface as `usage.x_m365_dea_score`. Lets clients back off before tripping the filter (empirically: clean tool calls ~1e-8, prose ~1e-6, jailbreak-framed ~1e-3, Disengaged > some threshold above 2e-3). |
+| `offense` | `Unknown` / `None` / etc. | Coarser version of the score signal. |
+| `turnCount` | Authoritative server-side turn count for this conversation. | Cross-check against our local counter. |
+| `turnState` | `Completed` (only value observed). | Explicit "this turn is done" signal. |
+| `contentOrigin` | `DeepLeo` (reasoning pipeline) / `officeweb` (user echo) / etc. | Tells which back-end answered without parsing text. |
+| `gptIdentifiers[].compliantAgentName` | `3PDeclarativeAgent` when our Copilot Studio agent handled it. | Confirms the agent attachment took. |
+
 ### c) Throttling update
 ```json
 { "throttling": {
@@ -210,6 +221,21 @@ See §7.
 
 ### End of turn
 A `type:2` (stream item), `type:3` (completion), or `type:7` (close) ends the turn; we close the socket. Reply to `type:6` pings in the meantime.
+
+### `type:2` stream item — the conversation summary
+
+The final `type:2` frame carries the canonical state of the whole conversation in `item`:
+
+| Field | Notes |
+|---|---|
+| `messages` | All messages (user + bot, with the final scores attached). |
+| `throttling` | Authoritative quota state. |
+| `result.{value, message, serviceVersion}` | `value: "Success"` + `message:` the final bot text + the M365 service build (e.g. `1.0.03443.34112`). |
+| `turnState` | `Completed`. |
+| `conversationExpiryTime` | ~30 days out — the conversation itself has a hard expiry. |
+| `conversationTransferToken` | Base64. Decodes to `{"type":"FullConversation","conversationId":"..."}`. Mechanism unclear — possibly a handle for migrating a conversation across sessions/hosts; not yet investigated. |
+| `firstNewMessageIndex` | Which message is "new" since the previous turn — could power smarter delta sends. |
+| `telemetry.startTime`, `telemetry.userMessageRequestStartTime` | The latter is always null in our captures; might require a feature-flag flip. |
 
 ---
 

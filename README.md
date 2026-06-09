@@ -214,7 +214,8 @@ Three token scopes are acquired:
 | `M365_NO_INTERACTIVE` | Set to `1` to forbid the visible-browser login fallback (automated runs fail loudly instead of hanging) |
 | `M365_AGENT_NO_CLEANUP` | Skip deleting stale `m365-tool-agent-*` versions (use during staggered multi-host rollouts) |
 | `M365_ALLOW_MULTI_TOOL` | Allow the model to emit multiple tool calls per turn (default: only the first is kept) |
-| `M365_INJECT_REPLY_TOOL` | Set to `1` to inject a synthetic `reply(text)` tool. Forces every turn to be a tool call, including pure-prose answers. Cleaner contract for the model, +1 tool to the prompt (watch the Disengaged threshold). See [docs/hypotheses.md §1.1](docs/hypotheses.md). |
+| `M365_INJECT_REPLY_TOOL` | Set to `1` to inject a synthetic `reply(text)` tool. Forces every turn to be a tool call, including pure-prose answers. Cleaner contract for the model, +1 tool to the prompt (watch the Disengaged threshold). Confirmed 5/5 compliance on June 9 2026 ([hypotheses §1.1](docs/hypotheses.md)). |
+| `M365_KEEP_FEWSHOT` | Set to `1` to restore the few-shot example we used to inject into the per-request prompt. **Disabled by default** since `scripts/tool-compliance-experiment.mjs` measured it as dead weight (5/5 compliance without it, 10% faster). |
 | `M365_CACHE_FILE` | Override MSAL token cache location |
 | `M365_SECRETS_FILE` | Override credentials file location |
 | `CHROMIUM_PATH` | Path to Chromium binary for automated login |
@@ -234,14 +235,28 @@ proxy we have to "context-window utilisation" since M365 hides token counts:
   "x_m365_conversation_max": 600,
   "x_m365_conversation_pct": 7,
   "x_m365_conversation_remaining": 558,
-  "x_m365_content_origin": "3PDeclarativeAgent",
-  "x_m365_message_type": null
+  "x_m365_content_origin": "DeepLeo",
+  "x_m365_message_type": null,
+  "x_m365_turn_count": 3,
+  "x_m365_classifier_scores": {
+    "BotOffense": 1.27e-7,
+    "dea_violation": 2.81e-6
+  },
+  "x_m365_dea_score": 2.81e-6,
+  "x_m365_offense_score": 1.27e-7
 }
 ```
 
+`x_m365_dea_score` is M365's own "disengaged-eligible answer" classifier
+score — the closest signal to "am I about to get Disengaged?". Empirically:
+clean tool calls sit at ~1 × 10⁻⁸, prose at ~1 × 10⁻⁶, jailbreak-shaped
+prompts at ~1 × 10⁻³. Disengaged itself fires at some threshold > 2 × 10⁻³
+that we haven't yet pinpointed. Clients can monitor this to back off before
+tripping the filter.
+
 Clients that ignore unknown extension fields keep working; curious users can
-read them. See [docs/hypotheses.md §2/§3](docs/hypotheses.md) for the search
-log on actual token counts.
+read them. See [docs/hypotheses.md §0](docs/hypotheses.md) for the full
+findings dump and [§2](docs/hypotheses.md) for what we tried and didn't find.
 
 ## Config files
 
