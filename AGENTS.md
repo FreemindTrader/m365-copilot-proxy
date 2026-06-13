@@ -17,6 +17,31 @@ of truth; keep it in sync if you change protocol behaviour.
 tool-call compliance experiments, the search for token/context-window data, the
 "how do we improve this proxy" backlog. Update it whenever an experiment lands.
 
+## How we work — hypothesis-driven (default)
+
+This is a reverse-engineering project against an undocumented API. **The default
+mode is science: turn every "I think X" into a testable hypothesis, design the
+cheapest probe that would confirm or kill it, run it, and record the result.**
+Don't guess what works — measure it. Don't stop at a plausible inference when the
+live API or the benchmark can settle it. Always be looking for the next testable
+hypothesis that teaches us something.
+
+- **Log every hypothesis in [`docs/hypotheses.md`](docs/hypotheses.md)** with a
+  falsification criterion and a probe idea; update it when an experiment lands
+  (confirmed / disproved, with sample size + evidence pointer).
+- **Probes live in `scripts/`** — small, single-purpose, read-mostly. Reuse
+  `scripts/_probe-chat.mjs` (one M365 turn in → structured result out; supports
+  `optionsSets` / `extraAllowed` / `plugins` / `variants` / `tone` / agent
+  overrides) and copy an existing probe rather than starting from scratch.
+- **Quantify with the benchmark** — `scripts/bench/` (Terminal-Bench-style) scores
+  real agentic coding tasks objectively, executing every tool call in a
+  `--network none` Docker sandbox. To compare *any* lever (tool format, model/tone,
+  prompt, optionsSets) run it with a `--label` and diff the scorecards in
+  `scripts/bench/out/`. "Best" is a pass-rate number, not an opinion. See
+  `scripts/bench/README.md`.
+- Prefer empirical evidence — what the real first-party client sends/receives
+  (capture it with Playwright), what the bench scores — over schema guesses.
+
 ## Layout (pnpm workspace, all TypeScript/ESM)
 
 | Package | Role |
@@ -26,7 +51,9 @@ tool-call compliance experiments, the search for token/context-window data, the
 | `@m365-copilot/proxy` | standalone **Nitro** service / proxy binary (`m365-proxy`); file-based `routes/`, startup-auth `plugins/`, builds to `.output/` |
 | `@m365-copilot/openclaw-plugin` | OpenClaw config generator + setup CLI |
 
-`scripts/` holds dev/diagnostic tools (`login-probe`, `proxy-verify`, `toolformat-experiment`).
+`scripts/` holds RE probes + dev tools (`_probe-chat` helper, `proxy-verify`,
+frame/optionsSets/tone probes, `gateway-*` captures) and **`scripts/bench/`** — the
+quantitative benchmark. See the hypothesis-driven section above.
 
 ## Build & test
 
