@@ -797,7 +797,28 @@ on "Please continue." retries.
 **Probes added:** `code-interpreter-probe.mjs`, `tone-probe.mjs`; `_probe-chat.mjs`
 gained `optionsSets` / `extraAllowed` / `plugins` / `variants` overrides.
 
-**Open / next:** wire code-interpreter as an exposed capability; the native
-action / MCP path (cloudflared quick tunnel, no account needed) to get
-Claude-grade tool use; populate `optionsSets` on the main path (memory,
-custom-instructions, image) once verified not to break the agent route.
+**Also shipped:** code interpreter is now wired into the proxy on the agent-less
+(plain-chat) path — `CODE_INTERPRETER_OPTIONS_SETS` in `session.ts`, on by
+default, disable with `M365_NO_CODE_INTERPRETER=1`. Verified end-to-end through
+the proxy (SHA-256 oracle). Left off the agent/tool path so it doesn't compete
+with tool-JSON emission.
+
+**MCP / native-action foothold (H8.4/H8.5) — infra ready, schema RE pending.**
+A cloudflared **quick tunnel needs no account** (`cloudflared tunnel --url
+http://localhost:PORT` → a `*.trycloudflare.com` URL) — confirmed working, reaching
+a local sentinel server (`scripts/sentinel-server.mjs`, serves an OpenAPI spec at
+`/openapi.json`, a `/sentinel` endpoint, and a minimal MCP endpoint at `/mcp`; it
+logs every inbound hit so we can see if Copilot's orchestrator calls us). The
+remaining unknown is the **`minimalBots` create-payload schema for actions**: the
+insertion points are `aIPluginOperationChanges` (top level) and `metadata.tools`
+(GPT component) in `agent.ts::createBot`, both currently `[]` — these are
+undocumented Dataverse `aiplugin`/`aipluginoperation` shapes. Next session: POST
+create attempts and read the 400s to infer the schema (PowerPlatform API, doesn't
+burn BizChat quota), then chat-test whether Copilot calls the tunnel. Cheaper
+adjacent win first: `gptCapabilities.{codeInterpreter,webBrowsing}:true` in
+`createBot` are *documented* toggles already in our payload (set `false`) — flip
+to give the tool **agent** native code-exec / web search.
+
+**Open / next:** crack the action schema (above); populate `optionsSets` on the
+main path (memory, custom-instructions, image) once verified not to break the
+agent route; the Disengaged tool-count calibration for Hermes-sized toolsets.

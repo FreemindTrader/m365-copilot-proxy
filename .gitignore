@@ -21,3 +21,5 @@ scripts/send-cancel-out/
 .pi-local/
 scripts/code-interp-out/
 scripts/tone-out/
+scripts/sentinel-hits.log
+scripts/sentinel-value.txt

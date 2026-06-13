@@ -23,6 +23,20 @@ const log = createLogger("session");
 // the partial answer. See docs/m365-copilot-api.md §6 and hypotheses.md F11.
 const STOP_FRAME = JSON.stringify({ arguments: [{}], invocationId: "1", target: "stop", type: 1 }) + RS;
 
+// Enabling these optionsSets unlocks M365's real server-side Python sandbox:
+// the model writes and EXECUTES Python and returns true results (verified with a
+// SHA-256 oracle — docs/hypotheses.md §8.9 / scripts/code-interpreter-probe.mjs).
+// Applied only on the agent-less (plain-chat) path: the tool-calling agent wants
+// the model to emit tool JSON, not run its own Python, so we leave that path
+// untouched. Disable with M365_NO_CODE_INTERPRETER=1.
+const CODE_INTERPRETER_OPTIONS_SETS = [
+  "cwc_code_interpreter",
+  "cwc_code_interpreter_amsfix",
+  "cwc_code_interpreter_citation_fix",
+  "code_interpreter_interactive_charts",
+  "code_interpreter_matplotlib_patching",
+];
+
 // --- Optional per-request frame dumping for reverse engineering ---
 // Enabled by M365_DUMP_FRAMES=1. Every SignalR frame received is appended to a
 // per-request NDJSON file under ~/.config/opencode-m365/frames/. Cheap to run
@@ -354,7 +368,10 @@ export class CopilotSession {
               source: "officeweb",
               clientCorrelationId: requestId,
               sessionId,
-              optionsSets: [] as string[],
+              // Code interpreter on the agent-less path only (see const above).
+              optionsSets: (!agentId && !process.env.M365_NO_CODE_INTERPRETER)
+                ? CODE_INTERPRETER_OPTIONS_SETS
+                : ([] as string[]),
               streamingMode: "ConciseWithPadding",
               spokenTextMode: "None",
               options: {},
@@ -374,6 +391,8 @@ export class CopilotSession {
                 "DeveloperLogs",
                 "EndOfRequest",
                 "ReferencesListComplete",
+                "GeneratedCode",        // code-interpreter execution frames
+                "GenerateContentQuery",
               ],
               sliceIds: [] as string[],
               threadLevelGptId: agentId
