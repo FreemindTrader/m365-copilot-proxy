@@ -42,9 +42,12 @@ export class ModelSession {
     return this.copilotSession?.turnCount ?? 0;
   }
 
-  private createCopilotSession(): CopilotSession {
+  /** Agent id baked into the current copilotSession (undefined = no agent). */
+  private currentAgentId: string | undefined = undefined;
+
+  private createCopilotSession(agentId: string | undefined): CopilotSession {
     return new CopilotSession({
-      agentId: this.cachedAgentId ?? undefined,
+      agentId,
       sessionId: this.sessionId,
       conversationId: this.conversationId,
     });
@@ -52,14 +55,24 @@ export class ModelSession {
 
   /**
    * Send text to M365 Copilot and stream back the response.
-   * If `signal` aborts (e.g. the HTTP client disconnects), the in-flight turn is
+   *
+   * `useAgent` decides whether THIS turn attaches the tool-calling Copilot Studio
+   * agent (`threadLevelGptId`). The handler passes `false` for tool-less requests
+   * — the agent is only needed to coerce tool-call output, and crucially it
+   * **overrides the `tone` and forces GPT-5** (docs/hypotheses.md H8.6): with the
+   * agent attached a `Claude_*` tone silently routes to GPT, and heavy tool
+   * prompts can Disengage. So plain chat skips the agent and gets the real model
+   * the tone selects (e.g. Claude Sonnet 4.5).
+   *
+   * If `signal` aborts (the HTTP client disconnects) the in-flight turn is
    * cancelled by sending M365's Stop frame, mirroring the real UI's Stop button.
    */
-  async run(text: string, model: string = "m365-copilot", signal?: AbortSignal): Promise<CopilotStream> {
+  async run(text: string, model: string = "m365-copilot", signal?: AbortSignal, useAgent: boolean = true): Promise<CopilotStream> {
     const token = await this.resolveToken();
+    const wantAgent = this.useAgent && useAgent;
 
-    // Resolve agent ID lazily (persists across resets)
-    if (this.useAgent && this.cachedAgentId === undefined) {
+    // Resolve agent ID lazily (persists across resets), only when wanted.
+    if (wantAgent && this.cachedAgentId === undefined) {
       try {
         this.cachedAgentId = await getOrCreateAgent();
         if (this.cachedAgentId) log.info(`Using agent: ${this.cachedAgentId}`);
@@ -68,20 +81,25 @@ export class ModelSession {
         this.cachedAgentId = null;
       }
     }
+    const agentForTurn = wantAgent ? (this.cachedAgentId ?? undefined) : undefined;
 
-    // Create session on first call or after reset
-    if (!this.copilotSession) {
-      this.copilotSession = this.createCopilotSession();
+    // Create (or recreate) the session when missing or when this turn's
+    // agent-ness differs from the current session's — switching the agent on/off
+    // changes routing, so the WS session must carry the right threadLevelGptId.
+    if (!this.copilotSession || this.currentAgentId !== agentForTurn) {
+      this.copilotSession = this.createCopilotSession(agentForTurn);
+      this.currentAgentId = agentForTurn;
     }
 
-    log.info(`run: model=${model}, turn=${this.copilotSession.turnCount}, sid=${this.sessionId}, cid=${this.conversationId}, text=${JSON.stringify(trunc(text, 200))}`);
+    log.info(`run: model=${model}, agent=${agentForTurn ?? "none"}, turn=${this.copilotSession.turnCount}, sid=${this.sessionId}, cid=${this.conversationId}, text=${JSON.stringify(trunc(text, 200))}`);
 
     try {
       return await this.copilotSession.chat(token, text, model, signal);
     } catch (err: any) {
       // Session might be stale — reconnect with same IDs
       log.info("Session error, reconnecting:", err.message);
-      this.copilotSession = this.createCopilotSession();
+      this.copilotSession = this.createCopilotSession(agentForTurn);
+      this.currentAgentId = agentForTurn;
       return await this.copilotSession.chat(token, text, model, signal);
     }
   }
@@ -105,6 +123,7 @@ export class ModelSession {
         log.info(`Agent refreshed: ${this.cachedAgentId ?? "none"} -> ${fresh ?? "none"}`);
         this.cachedAgentId = fresh;
         this.copilotSession = null; // reconnect so the new agent id takes effect
+        this.currentAgentId = undefined;
         return true;
       }
     } catch (err: any) {
@@ -121,5 +140,6 @@ export class ModelSession {
   reset() {
     this.copilotSession = null;
     this.cachedAgentId = undefined;
+    this.currentAgentId = undefined;
   }
 }

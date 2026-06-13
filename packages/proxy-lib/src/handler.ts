@@ -199,7 +199,11 @@ export async function handleChatCompletion(
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       let copilotStream;
       try {
-        copilotStream = await session.run(text, model, opts.signal);
+        // Only attach the tool-calling agent when the request actually has tools.
+        // The agent overrides `tone` (forces GPT-5), so tool-less requests must
+        // skip it to reach the model the tone selects (e.g. Claude). See
+        // ModelSession.run / docs H8.6.
+        copilotStream = await session.run(text, model, opts.signal, !!hasTools);
       } catch (err: any) {
         return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
       }
@@ -222,6 +226,23 @@ export async function handleChatCompletion(
 
       if (copilotStream.hasContent || fullText.length > 0) {
         return { fullText };
+      }
+
+      // Disengaged is a deliberate safety refusal, NOT a transient empty. Retrying
+      // it with "Please continue." just disengages again and burns the 600-msg
+      // quota (observed: 5 wasted messages in one turn). Fail fast with a clear
+      // signal instead. Commonly fires when a heavy tool prompt is paired with a
+      // non-default model/agent (e.g. a Claude tone + the declarative agent).
+      if (copilotStream.messageType === "Disengaged") {
+        log.info("Upstream Disengaged — failing fast (no retry) to preserve quota");
+        return {
+          error: jsonResponse(502, {
+            error: {
+              message: "M365 Copilot disengaged from this request (its safety filter declined to answer). Common causes: too many tools, jailbreak-shaped instructions, or pairing a non-default model with the tool agent. Reduce the toolset or use the default model.",
+              type: "disengaged",
+            },
+          }),
+        };
       }
 
       // Empty response. Only an at-limit throttle warrants treating this as rate

@@ -60,7 +60,11 @@ const VARIANTS = [
   "Agt_bizchat_enableGpt5ForHelix",
 ].join(",");
 
-// Model name → tone mapping
+// Model name → tone mapping.
+// The server VALIDATES tones (an unknown tone errors with "Failed to invoke
+// 'Chat'"), so every entry here has been confirmed accepted against the live
+// API. Claude tones self-identify as "Claude Sonnet 4.5, by Anthropic"
+// (docs/hypotheses.md H8.6) — a genuine non-Microsoft model at zero marginal cost.
 const MODEL_TONES: Record<string, string> = {
   // Default
   "m365-copilot": "magic",
@@ -69,6 +73,18 @@ const MODEL_TONES: Record<string, string> = {
   // Generic modes
   "quick": "Gpt_Quick",
   "think-deeper": "Gpt_Reasoning",
+
+  // Claude (real Anthropic models, confirmed via self-id) — chat + reasoning.
+  "claude": "Claude_Sonnet",
+  "claude-sonnet": "Claude_Sonnet",
+  "claude-sonnet-4.5": "Claude_Sonnet",
+  "claude-sonnet-think-deeper": "Claude_Sonnet_Reasoning",
+  "claude-opus": "Claude_Opus", // accepted tone; identity deflected, likely Opus
+
+  // GPT-5.5 (current generation)
+  "gpt-5.5": "Gpt_5_5_Chat",
+  "gpt-5.5-quick": "Gpt_5_5_Chat",
+  "gpt-5.5-think-deeper": "Gpt_5_5_Reasoning",
 
   // GPT-5.4
   "gpt-5.4": "Gpt_5_4_Reasoning",
