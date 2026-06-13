@@ -67,6 +67,12 @@ wss://substrate.office.com/m365Copilot/Chathub/{oid}@{tid}?{query}
 ### Flow: MSAL PKCE
 We use `@azure/msal-node` `PublicClientApplication` with PKCE. The token cache is persisted to `~/.config/opencode-m365/msal-cache.json` and refreshed silently when possible.
 
+> **The cache is disposable (tested June 2026, `scripts/token-regen-probe.mjs`).** Delete `msal-cache.json` and the next `getToken()` self-heals: silent fails → automated browser login (stored creds + TOTP) → a fresh, working token in **~12s**, no human in the loop. The regenerated token is **functionally identical** — same `aud`/`appid`/`tid`/`oid`/scopes, only `iat`/`exp`/`uti` change. Point auth at a throwaway cache with `M365_CACHE_FILE` to test this without touching the real one.
+>
+> **Re-auth does NOT clear account throttling** — the fresh token carries the same `oid`, so it lands in the same account-keyed throttle bucket. Throttling is identity-level, not token-level.
+>
+> **Observed token scopes** (the Sydney token already carries these): `CopilotPlatform{Content.Process,Files.ReadWrite(All),Mail.Read(.Shared),Presence.Read(.All),Sites.Read.All,Teams.ReadWrite.All,User.Read,License...,ProtectionScopes...,DataLossPrevention...}` + `M365Chat.Read` + `sydney.readwrite`. So the auth we hold already has the entitlements behind Files/Mail/Sites/Teams/Presence — the foundation for any Graph "Work" grounding (hypotheses §8 H8.11).
+
 ### The `nativeclient` redirect gotcha (this one cost hours)
 The `nativeclient` redirect URI is designed to be **intercepted by an embedded native host** (WebView2 etc.) *before the page loads*. A real browser instead follows the redirect one hop further and lands on **`https://login.microsoftonline.com/common/wrongplace`** ("This is not the right page"). So:
 
