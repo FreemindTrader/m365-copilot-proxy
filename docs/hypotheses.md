@@ -908,8 +908,21 @@ Probes: `code-interp-egress.mjs` (+ subagent's `code-interp-{egress-diag,proxy-p
 **Conclusion.** The lightweight, BizChat-reachable agent **cannot be given real
 tools** on this tenant: it has no tool storage (§8.10), and its sandbox can't
 reach out (Fork B). Native tool-calling over BizChat would require **Fork A**,
-which is gated on a Copilot Studio license/trial — and even then the
-*does-a-full-bot-answer-over-BizChat?* question (§10 ❓) remains the final unknown.
-**So: tool calling stays prompt-emulated (GPT `magic` + the agent) for now.** The
-genuine wins this session — code interpreter (compute, not egress), Claude for
-plain chat, GPT-5.5, the I/O + cancel work — stand on their own.
+which is gated on a Copilot Studio license/trial.
+
+**Decision (project scope): Fork A is OUT OF SCOPE — do not pursue it.** The entire
+point of this project is turning a **free student M365 or an existing corporate
+seat into something useful at ZERO added cost**. A Copilot Studio license/trial
+defeats that premise — the target users (students, corp employees without admin
+license budget) don't have it and won't buy it. So the native-MCP/full-bot path is
+permanently parked *by design*, not pending a trial. **Tool calling stays
+prompt-emulated** — the declarative lightweight agent + the model emitting
+` {"tool":...,"arguments":...} ` JSON that the proxy parses (`tools.ts`/`handler.ts`).
+Future sessions: don't re-investigate MCP, full Dataverse bots, the Island Gateway
+tool API, or trials — they all require licensing the user base lacks. Improve the
+prompt-emulated path instead (compliance, the §8 optionsSets capabilities that
+need no license: code interpreter, memory, web grounding, image).
+
+The genuine, zero-cost wins this session — code interpreter (compute, not egress),
+Claude for plain chat, GPT-5.5, the I/O + cancel work — stand on their own and are
+exactly the right kind of improvement: capability with no license attached.
