@@ -873,3 +873,43 @@ is harmless (read-only sentinel) and fine to leave anonymous for probing only.
 
 **Probes added:** `mcp-agent-probe.mjs`, `gateway-capture.mjs`, `gateway-explore.mjs`,
 `sentinel-server.mjs`.
+
+### 8.11 — Both native-tool paths CLOSED on this tenant (June 13, conclusive)
+
+Ran both forks to a definitive end. **Both are blocked**, for independent reasons.
+
+**Fork A — full Dataverse bot: blocked by tenant licensing.** Driving the real
+Copilot Studio UI (`scripts/create-full-bot.mjs`) lands on a *"Select a team — to
+create agents for Microsoft Teams"* gate plus *"Try the full capabilities of
+Copilot Studio by upgrading your license / start a trial."* This tenant has only
+the **lightweight "Copilot Studio for Teams"** tier — which is exactly why every
+agent we create is a storage-less lightweight bot (§8.10). Creating a
+**full Dataverse bot** (the only kind that can hold MCP/connector tools) requires
+a **Copilot Studio license or trial** the tenant lacks. Not startable without an
+explicit billing decision. *If* the trial is started, the rest is ready: gateway
+host (`eu-il105`), the SPA token (`96ff4394`), and the `content/botcomponents` PUT
+with a `kind: McpTool` DialogComponent (from Microsoft's own `island-client.js`).
+
+**Fork B — code-interpreter Python → our endpoint: blocked by a hard airgap.**
+The user's idea: the code interpreter runs real Python, so have it `requests.get`
+our tunnel. Tested rigorously (5 msgs, every one confirmed by a `GeneratedCode`
+frame = real execution; ground truth = `sentinel-hits.log`, which recorded **zero**
+sandbox hits). The sandbox is **fully network-isolated, below Python**:
+- **DNS dead** — `/etc/resolv.conf` is empty; `socket.gethostbyname` →
+  `gaierror(-3, Temporary failure in name resolution)`.
+- **The `http_proxy` (`localhost:8000`) is a trap** — a Go stub that returns
+  `404` to CONNECT for *every* host (incl. microsoft.com); it forwards nothing.
+- **Raw TCP to public IPs** (`1.1.1.1:443`, `8.8.8.8:53`, Google) → `TimeoutError`
+  (silently dropped — no route out of the netns).
+- Only `localhost` services reachable (an internal Jetty on `:9998`).
+No library/technique workaround exists — the block is at the network namespace.
+Probes: `code-interp-egress.mjs` (+ subagent's `code-interp-{egress-diag,proxy-probe,rawip-probe,rawip2}.mjs`).
+
+**Conclusion.** The lightweight, BizChat-reachable agent **cannot be given real
+tools** on this tenant: it has no tool storage (§8.10), and its sandbox can't
+reach out (Fork B). Native tool-calling over BizChat would require **Fork A**,
+which is gated on a Copilot Studio license/trial — and even then the
+*does-a-full-bot-answer-over-BizChat?* question (§10 ❓) remains the final unknown.
+**So: tool calling stays prompt-emulated (GPT `magic` + the agent) for now.** The
+genuine wins this session — code interpreter (compute, not egress), Claude for
+plain chat, GPT-5.5, the I/O + cancel work — stand on their own.

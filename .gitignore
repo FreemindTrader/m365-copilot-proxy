@@ -26,3 +26,5 @@ scripts/sentinel-value.txt
 scripts/mcp-agent-out/
 scripts/gateway-capture-out/
 scripts/gateway-explore-out/
+scripts/create-full-bot-out/
+scripts/code-interp-out/
