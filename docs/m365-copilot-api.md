@@ -161,21 +161,45 @@ The timestamp values appear cosmetic, but the frame's **presence is required**.
 
 There is no `model` parameter. The `tone` string on the chat message picks the model/mode:
 
-| Our model id | `tone` |
-|---|---|
-| `m365-copilot` / `auto` | `magic` (auto-routing) |
-| `quick` | `Gpt_Quick` |
-| `think-deeper` | `Gpt_Reasoning` |
-| `gpt-5.4` / `gpt-5.4-think-deeper` | `Gpt_5_4_Reasoning` |
-| `gpt-5.4-quick` | `Gpt_5_4_Quick` |
-| `gpt-5.3` / `gpt-5.3-quick` | `Gpt_5_3_Quick` |
-| `gpt-5.3-think-deeper` | `Gpt_5_3_Reasoning` |
-| `gpt-5.2` / `gpt-5.2-quick` | `Gpt_5_2_Quick` |
-| `gpt-5.2-think-deeper` | `Gpt_5_2_Reasoning` |
+| Our model id | `tone` | Notes |
+|---|---|---|
+| `m365-copilot` / `auto` | `magic` (auto-routing) | default; routes GPT-5 class |
+| `quick` | `Gpt_Quick` | |
+| `think-deeper` | `Gpt_Reasoning` | |
+| `claude` / `claude-sonnet` | `Claude_Sonnet` | **real Anthropic Claude Sonnet 4.5** (self-identifies) |
+| `claude-sonnet-think-deeper` | `Claude_Sonnet_Reasoning` | Claude Sonnet 4.5 + reasoning |
+| `claude-opus` | `Claude_Opus` | accepted tone; identity deflected (likely Opus) |
+| `gpt-5.5` / `gpt-5.5-quick` | `Gpt_5_5_Chat` | current GPT generation |
+| `gpt-5.5-think-deeper` | `Gpt_5_5_Reasoning` | |
+| `gpt-5.4` / `gpt-5.4-think-deeper` | `Gpt_5_4_Reasoning` | |
+| `gpt-5.4-quick` | `Gpt_5_4_Quick` | |
+| `gpt-5.3` / `gpt-5.3-quick` | `Gpt_5_3_Quick` | |
+| `gpt-5.3-think-deeper` | `Gpt_5_3_Reasoning` | |
+| `gpt-5.2` / `gpt-5.2-quick` | `Gpt_5_2_Quick` | |
+| `gpt-5.2-think-deeper` | `Gpt_5_2_Reasoning` | |
 
-Mapping lives in `MODEL_TONES` (`copilot.ts`). `*_Reasoning` tones take 10–30s. New tones appear over time; they're guessable by pattern (`Gpt_5_N_{Quick,Reasoning}`).
+Mapping lives in `MODEL_TONES` (`copilot.ts`). `*_Reasoning` tones take 10–30s.
 
-> ⚠️ **Reasoning tones break with our agent.** `tone` is a chat-layer setting; our Copilot Studio agent (§10) is a declarative agent. Combining a declarative agent with a `*_Reasoning` tone is an unsupported pairing: the reasoning pipeline (`DeepLeo`) treats the injected prompt as material to *analyze* rather than instructions to obey, and disengages from tool use. Only the default `magic` and the `*_Quick` tones behave with the agent. See §10 → *Agent types*.
+**The server validates `tone`.** An unknown tone returns a `type:3` completion error (`Failed to invoke 'Chat'`), so an accepted tone is a real, registered route — that's how the Claude/GPT-5.5 tones above were confirmed (June 2026). Rejected on test: `Anthropic_Claude`, `Claude_Haiku`, `Claude_3_7_Sonnet`, `Gpt_5_6_Chat`. Accepted-but-NOT-Claude: `Claude_Reasoning` (self-IDs as GPT-5 — don't use). New tones still appear by pattern (`Gpt_5_N_{Quick,Reasoning}`, `Claude_*`).
+
+> ⚠️ **The declarative agent overrides the tone and forces GPT-5.** This is the big one (June 2026, `scripts/tone-probe.mjs`): with **no agent**, `Claude_Sonnet` → real Claude; with the agent attached (`threadLevelGptId`, §10) the *same* tone silently routes to **GPT-5**. So a non-default tone (Claude, and the `*_Reasoning` tones) only takes effect on the **agent-less / plain-chat** path. With a heavy tool prompt a Claude tone + agent goes further and **Disengages persistently** (the `DeepLeo` reasoning pipeline meta-analyses the injected prompt instead of obeying it). Ruled out as causes: prompt wrapper, the `variants` flag list, conversation reuse — isolated cleanly to agent presence.
+>
+> **Consequence:** Claude (and other non-default tones) are usable for plain chat but **not** for tool calling via our emulation agent — tool requests get GPT regardless. The proxy therefore attaches the agent **only when the request carries tools** (`ModelSession.run(..., useAgent=hasTools)`), so plain chat reaches the model the tone selects. Getting Claude-grade *tool* use needs the native-action / MCP path (no declarative agent) — see `docs/hypotheses.md` §8.
+
+### Code interpreter — a real server-side Python sandbox
+
+Enabling these `optionsSets` on the chat turn unlocks M365's actual Python execution environment (the engine behind the "Analyst" experience):
+
+```
+cwc_code_interpreter, cwc_code_interpreter_amsfix, cwc_code_interpreter_citation_fix,
+code_interpreter_interactive_charts, code_interpreter_matplotlib_patching
+```
+
+…plus `GeneratedCode` (and `GenerateContentQuery`) in `allowedMessageTypes`. The model then **writes and runs real Python** and returns true results — verified with a SHA-256 oracle (a correct digest of a unique string is impossible to fake from memory; M365 emitted a `GeneratedCode` frame running `hashlib.sha256(...).hexdigest()` and returned the correct hash). `contentOrigin: DeepLeo`.
+
+The proxy enables this on the **agent-less path** (so plain chat can compute; the tool/agent path is left alone so it doesn't compete with tool-JSON emission). `CODE_INTERPRETER_OPTIONS_SETS` in `session.ts`; disable with `M365_NO_CODE_INTERPRETER=1`. Note it's M365's sandbox, not the harness's — useful for accuracy (hashing, math, parsing, data transforms), not a substitute for the harness's own tools.
+
+> The `optionsSets` array was previously sent **empty**. Live reference implementations (`kuchris/m365-copilot-openai-proxy`, Microsoft's own `PyRIT`) populate it richly — code interpreter, memory, custom-instructions, image input. See `docs/hypotheses.md` §8 for the full catalogue of flags still on the table.
 
 ---
 
@@ -386,6 +410,10 @@ Evidence (`scripts/dataverse-bot-probe.mjs`, with a `<org>.crm4.dynamics.com/.de
 | 18 | **Deleted-agent trap:** a long-lived host caches its agent id for life (`reset()` won't clear it) and can't self-heal when its bot is cleaned up; dead agent → instant empty reply (`throttle:null`, ~0.7s) misread as "rate limited". Restart, or clear `cachedAgentId` on empty | `model.ts`/§10 |
 | 19 | **Cancel** = send `{"type":1,"target":"stop","invocationId":"1","arguments":[{}]}` then close; server acks `type:3` and wipes the partial answer. Still costs 1/600; context persists. **Proxy now sends this on client-abort** | §6/F11 |
 | 20 | **I/O is asymmetric:** input is retrieval-backed ≥500k tokens (benign size never Disengages); output soft-caps ~3k tokens by *concluding early*, not truncating — so big writes look complete but aren't. Proxy advertises 128k window + emits `finish_reason:"length"` near the cap | §6/F9/F10 |
+| 21 | **The agent overrides `tone` → GPT-5.** A non-default tone (Claude, `*_Reasoning`) only takes effect with NO agent attached; with the agent it silently routes to GPT (or Disengages on heavy tool prompts). Proxy attaches the agent only for tool requests | §5/§10 |
+| 22 | **`tone` is server-validated** (unknown → `type:3` error), so an accepted tone is real. `Claude_Sonnet` = real Claude Sonnet 4.5; `Gpt_5_5_*` current gen; `Claude_Reasoning` accepted but actually GPT | §5 |
+| 23 | **Code interpreter is real:** `cwc_code_interpreter*` optionsSets + `GeneratedCode` msg type → genuine server-side Python execution. Proxy enables it on the agent-less path | §5 |
+| 24 | **`optionsSets` was sent empty** — leaves code-interpreter/memory/custom-instructions/image off the table. Reference impls (PyRIT, kuchris) populate it | §5/hypotheses §8 |
 
 ---
 
