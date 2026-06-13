@@ -750,3 +750,54 @@ Live code hitting **this exact endpoint** — copy their `optionsSets`/`variants
 > hit **consumer Bing** (`bing.com`) — same Sydney lineage, field names transfer,
 > but image-upload host and some optionsSet availability may need the office.com
 > equivalent. Highest-confidence enterprise signals: PyRIT + the official audit schema.
+
+### 8.9 — CONFIRMED live (June 13 2026 dig), service `1.0.03449.35222`
+
+Probed against the live API. **Two headline wins shipped.**
+
+**✅ H8.1 — Code interpreter is real (`cwc_code_interpreter` optionsSets) 🟢.**
+With `optionsSets:["cwc_code_interpreter","cwc_code_interpreter_amsfix",
+"cwc_code_interpreter_citation_fix","code_interpreter_interactive_charts",
+"code_interpreter_matplotlib_patching"]` + `allowedMessageTypes:["GeneratedCode",
+"GenerateContentQuery","Progress"]`, a SHA-256 oracle proved **real server-side
+Python execution**: asked for `sha256("m365-codeinterp-probe-<ts>")`, M365 emitted
+a `GeneratedCode` frame running `hashlib.sha256(...).hexdigest()` and returned the
+**correct** digest (impossible to fake from memory). n=1, plain chat (no agent),
+`contentOrigin:DeepLeo`, 8.7s. Probe: `scripts/code-interpreter-probe.mjs`.
+*Not yet wired into the proxy* — it's a free server-side tool (hashing, math,
+data transforms) we can expose. Caveat: it's M365's sandbox, not the harness's.
+
+**✅ H8.6 — Claude Sonnet 4.5 is reachable via `tone` 🟢 (SHIPPED).**
+The server **validates tones** (bogus `Definitely_Not_A_Real_Tone` and
+`Anthropic_Claude`/`Claude_Haiku`/`Gpt_5_6_Chat` all error with "Failed to invoke
+'Chat'"), so an accepted tone is a real route. Confirmed accepted + self-identified:
+
+| tone | model id | self-report | notes |
+|---|---|---|---|
+| `Claude_Sonnet` | `claude` / `claude-sonnet` | **"Claude Sonnet 4.5, by Anthropic"** (5/5 runs) | real Claude |
+| `Claude_Sonnet_Reasoning` | `claude-sonnet-think-deeper` | "Claude Sonnet 4.5, by Anthropic" | real Claude + reasoning |
+| `Claude_Opus` | `claude-opus` | (deflected) | accepted tone; likely Opus |
+| `Gpt_5_5_Chat` / `Gpt_5_5_Reasoning` | `gpt-5.5*` | GPT-5 | current GPT gen |
+| `Claude_Reasoning` | — | GPT-5 | accepted but NOT Claude (don't use) |
+
+**Mechanism — the agent overrides the tone 🟢.** `NO agent + Claude_Sonnet →
+Claude`; `WITH agent (threadLevelGptId) + Claude_Sonnet → GPT-5`. The declarative
+tool agent forces GPT-5 routing, and a heavy tool prompt under a Claude tone +
+agent **Disengages persistently**. Ruled out as causes: prompt wrapper, the
+40-flag `variants` list, conversation reuse — isolated cleanly to agent presence.
+→ **Consequence:** Claude is usable for **plain chat** but NOT for tools via our
+emulation agent. Getting Claude+tools needs the native-action/MCP path (H8.4/H8.5,
+no declarative agent).
+
+**Shipped from this dig:** `claude*`/`gpt-5.5*` model ids; agent attached **only**
+for tool requests (so `claude-sonnet` plain chat reaches real Claude through the
+proxy — verified); `Disengaged` now fails fast instead of burning 5 quota messages
+on "Please continue." retries.
+
+**Probes added:** `code-interpreter-probe.mjs`, `tone-probe.mjs`; `_probe-chat.mjs`
+gained `optionsSets` / `extraAllowed` / `plugins` / `variants` overrides.
+
+**Open / next:** wire code-interpreter as an exposed capability; the native
+action / MCP path (cloudflared quick tunnel, no account needed) to get
+Claude-grade tool use; populate `optionsSets` on the main path (memory,
+custom-instructions, image) once verified not to break the agent route.

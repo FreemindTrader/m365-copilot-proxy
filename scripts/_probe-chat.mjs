@@ -49,6 +49,10 @@ export function oneTurn(o) {
     token, claims, text, agentId = null,
     tone = "magic", streamingMode = "ConciseWithPadding",
     timeoutMs = 120000, onFrame,
+    optionsSets = [],                 // extra BizChat optionsSets (code interpreter, memory, …)
+    extraAllowed = [],                // extra allowedMessageTypes (GeneratedCode, …)
+    plugins = undefined,              // override plugins; default = BingWebSearch (or [] to disable search)
+    variants = VARIANTS,              // override the WS-query variants flag list (string)
   } = o;
 
   const sessionId = crypto.randomUUID();
@@ -61,7 +65,7 @@ export function oneTurn(o) {
     "X-SessionId": sessionId,
     ConversationId: conversationId,
     access_token: token,
-    variants: VARIANTS,
+    variants,
     source: '"officeweb"',
     product: "Office",
     agentHost: "Bizchat.FullScreen",
@@ -76,12 +80,12 @@ export function oneTurn(o) {
       source: "officeweb",
       clientCorrelationId: requestId,
       sessionId,
-      optionsSets: [],
+      optionsSets,
       streamingMode,
       spokenTextMode: "None",
       options: {},
       extraExtensionParameters: {},
-      allowedMessageTypes: BASE_ALLOWED,
+      allowedMessageTypes: [...new Set([...BASE_ALLOWED, ...extraAllowed])],
       sliceIds: [],
       threadLevelGptId: agentId ? { id: agentId, source: "MOS3" } : {},
       traceId: requestId,
@@ -111,7 +115,7 @@ export function oneTurn(o) {
       ...(agentId
         ? { gpts: [{ id: agentId, source: "MOS3", version: "1.0.0",
             clientOverrides: { capabilities: [], "deepResearchModels@odata.type": "Collection(String)" } }] }
-        : { plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }] }),
+        : { plugins: plugins ?? [{ Id: "BingWebSearch", Source: "BuiltIn" }] }),
       isSbsSupported: true,
       tone,
       renderReferencesBehindEOS: true,
