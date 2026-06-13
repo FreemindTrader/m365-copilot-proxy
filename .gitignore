@@ -18,3 +18,4 @@ scripts/input-size-out/
 scripts/output-ceiling-out/
 scripts/cancel-frame-out/
 scripts/send-cancel-out/
+.pi-local/
