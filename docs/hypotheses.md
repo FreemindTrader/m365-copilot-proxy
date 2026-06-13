@@ -23,6 +23,7 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 - §5 — Disengaged-filter open questions
 - §6 — Cost / metering open questions
 - §7 — Probe backlog, ordered by info-gain ÷ cost
+- §8 — Capability-expansion hypotheses (web-research dig: empty `optionsSets`, code interpreter, MCP actions, Claude tone, throttling levers, reference implementations)
 
 ---
 
@@ -622,3 +623,130 @@ without code changes.
    real comparison — currently below the noise floor).
 3. **usage-endpoint-hunt-v2.mjs** with full browser headers (F5
    re-investigation).
+
+---
+
+## 8. Capability-expansion hypotheses (June 13 2026 web-research dig)
+
+A web dig across **five live implementations of this exact endpoint** — including
+Microsoft's own red-team tool — plus the official extensibility docs. All 🔴
+**untested guesses** unless noted; many are *doc-* or *wild-implementation-backed*
+(higher prior than our usual blind guess). Source URLs in §8.8.
+
+> **Headline: our chat payload sends `optionsSets: []` (empty).** Every other
+> implementation ships a rich `optionsSets` array that switches on code
+> interpreter, memory, custom instructions, image input, and search control.
+> We are almost certainly leaving capabilities off the table by omission.
+> Reference payloads to mine are in §8.8 — start there.
+
+> **Connects to the live tool-compliance problem.** The "answers in prose /
+> hallucinates tool results instead of calling a tool" failure (seen in the pi
+> smoke test) may be fixable at the *capability* layer, not just prompt wording:
+> H8.13 (`behavior_overrides.discourage_model_knowledge`), H8.12 (real
+> memory/custom-instructions channel), and especially H8.4/H8.5 (give it a
+> *real* server-side tool so it stops emulating) all attack it from a new angle.
+
+### 8.1 — Server-side tools we may be able to switch on (highest payoff)
+
+| # | Hypothesis | Why plausible (source) | Cheap probe | Payoff |
+|---|---|---|---|---|
+| **H8.1** | `optionsSets:["enterprise_flux_work_code_interpreter","code_interpreter_interactive_charts","code_interpreter_matplotlib_patching","codeintfile","sdretrieval"]` + `allowedMessageTypes:[…,"GeneratedCode","GenerateContentQuery"]` unlocks a **real server-side Python sandbox**. | PyRIT, kuchris, g365, SydneyQt all ship these; code-interpreter is "available to Copilot Chat users without metered usage" (MS docs). | Add the flags, send "run `print(2**100)` in Python"; watch for a `GeneratedCode` frame + a result the model couldn't compute itself. | A free code-execution tool — run/verify snippets, data transforms — without us hosting a sandbox. |
+| **H8.2** | The **declarative** route to the same: add `capabilities:[{"name":"CodeInterpreter"}]` to the `minimalBots` GPT-component create payload (not just `instructions`). | `CodeInterpreter` is a first-class manifest capability (manifest 1.6 / TypeSpec). Our agents *are* declarative agents under a different authoring API. | Republish agent with the capability; ask it to hash a string in Python; watch for code-exec frames vs hallucination. | Same sandbox, attached to our agent (survives across turns). |
+| **H8.3** | `capabilities:[{"name":"GraphicArt"}]` (or `optionsSets` flux flags `fluxcopilot`/`fluxprod`/`dgencontentv3`) returns **generated images** over the WS. | `GraphicArt` is a documented capability; flux flags are in every wild optionsSet. Visually-obvious → good **capability-acceptance canary**. | Add it; prompt "generate an image of a red cube"; watch for an image/blob frame. | Confirms the capabilities-array path works *at all* (cheap oracle) + image-gen tool. |
+| **H8.4** | `actions:[{id,file}]` → an embedded **`ai-plugin.json` with `runtimes:[{type:"OpenApi"}]`** gives **native function calling with real HTTP execution**, replacing our prompt-emulated loop. | API-plugin manifest 2.4; the documented native-action mechanism. Mark function `isNonConsequential` to skip the confirm card. | Stand up a 1-route OpenAPI endpoint returning a sentinel; reference it; watch for an outbound hit + sentinel in the reply. | The project's holy grail — real tool execution instead of JSON emulation. |
+| **H8.5** | **`RemoteMCPServer` runtime** in the plugin manifest points the agent at **our own MCP server**, exposing the coding agent's real tools (read_file/run_bash) as native Copilot actions. | Plugin manifest 2.4 added `type:"RemoteMCPServer"` (GA Apr 2026); inline `mcp_tool_description.tools[]` avoids package-file resolution. | Run a minimal Streamable-HTTP MCP server with one sentinel tool; embed inline; watch for an inbound `tools/call`. | Flips the architecture: *Copilot calls our tools* instead of us emulating them. |
+
+> **H8.4/H8.5 caveat (H8-inline):** `actions[].file` and `mcp_tool_description.file`
+> are *app-package-relative* — there's no package in the `minimalBots` flow.
+> Always send the **inline** form (`api_description` string / inline `tools[]`).
+> If file-based 400s but inline validates, that's the standard pattern.
+
+### 8.2 — Model selection beyond `tone`
+
+| # | Hypothesis | Why plausible | Probe | Payoff |
+|---|---|---|---|---|
+| **H8.6** | `tone` accepts a **Claude** value (`Claude_Sonnet`, `Anthropic_Claude`, …) and newer `Gpt_5_5_*`. | MS publicly shipped Claude in M365 Copilot; g365 already uses `Gpt_5_5_Reasoning`/`Gpt_5_5_Chat`. `tone` *is* the model selector. | Bisect tone candidates via `variants-bisect.mjs`; valid → content, invalid → error/silent `magic` fallback (detect via `contentOrigin`). | Route the coding agent to Claude through M365 at zero marginal cost. |
+| **H8.7** | `capabilities:[{"name":"ScenarioModels","models":[{id}]}]` is a **back-door model binding** for `minimalBots` agents (which have no model field). | `ScenarioModels` is the only capability whose `models[].id` looks like a binding handle; full PVA bots expose `cuaAnthropicModels` (sonnet4-6/opus4-6). | Add it with a guessed id (`sonnet4-6`); even a rejection **error may leak the valid enum**. | Model binding from the declarative path — attacks the "no model knob" wall (quirk 14). |
+| **H8.8** | Adding `SwitchRespondingEndpoint` to `allowedMessageTypes` reveals **mid-stream model routing** ("Auto"/Smart mode), and lets us detect when `magic` downgrades a coding task to the fast model. | kuchris/g365 whitelist it; MS "Smart Mode" docs describe real-time fast↔reasoning routing. | Add it; send a hard prompt at `tone:"magic"`; log whether the frame fires; compare to pinning `Gpt_5_4_Reasoning`. | Observability into which model answered + lever to force reasoning. |
+
+### 8.3 — Grounding & multimodal
+
+| # | Hypothesis | Why plausible | Probe | Payoff |
+|---|---|---|---|---|
+| **H8.9** | **Web search is a deterministic toggle:** `plugins:[]` + `optionsSets:["nosearchall"]` = off; our current `plugins:[{BingWebSearch}]` forces it on. | SydneyQt: `if NoSearch && len(Plugins)==0 { append("nosearchall") }`. Audit schema logs `AISystemPlugin:[{Id:"BingWebSearch"}]` only when search fired. | Same fresh-fact query with each config; watch `InternalSearchQuery`/`sourceAttributions` appear only when on; measure latency delta. | Off = faster, deterministic coding answers, no web derail. On (when wanted) = up-to-date docs + citations. |
+| **H8.10** | **Image INPUT (vision)** works by POSTing the image to a substrate `UploadFile` endpoint (PyRIT: `/m365Copilot/UploadFile`; SydneyQt consumer analog: `bing.com/images/kblob`) → `docId`/`BlobId`, then attaching `messageAnnotations:[{id,messageAnnotationType:"ImageFile"}]` with `optionsSets:["cwcgptvsan",…]`. NOT via `entityAnnotationTypes`. | PyRIT implements the full enterprise flow incl. header `X-Variants:feature.EnableImageSupportInUploadFile`. | Replicate the upload POST with a screenshot, attach annotation, ask "what's in this image?"; confirm pixel-level vision. | Screenshots of errors, UI mockups, diagrams as agent input. |
+| **H8.11** | **Graph/Work grounding** is gated by `entityAnnotationTypes` breadth + CIQ variants (`feature.EnableLuForChatCIQ`, `feature.enableChatCIQPlugin`) + `optionsSets:["at_mention_plugins_enable"]`; currently dormant because optionsSets is empty. | We already send the entity types; Zenity + audit schema confirm Graph entities (`TeamsChat`, mail, files) are grounding sources. | Enable CIQ variants, @-reference a real OneDrive file, watch for grounded citations. | M365 tenant data as a RAG backend — retrieval no other LLM API gives. |
+| **H8.12** | **Long-document QA** is gated by `optionsSets:["ldqa","ldsummary"]` paired with a `File` entity; improves deep-in-doc recall and may route through the separate `numLongDocSummary…` counter (→ H8.18). | `ld*` flags in SydneyQt defaults; MS "summarization needs whole-doc context" docs. | Reference a long file, needle question, toggle `ldqa`/`ldsummary`. | Reliable long-context grounding (logs, specs, PDFs). |
+
+### 8.4 — Memory, instructions, behavior (bears on the prose-compliance bug)
+
+| # | Hypothesis | Why plausible | Probe | Payoff |
+|---|---|---|---|---|
+| **H8.13** | `behavior_overrides:{special_instructions:{discourage_model_knowledge:true}}` in the agent create payload makes the orchestrator **suppress base-model knowledge and prefer tools** — directly attacking "answers from memory instead of calling a tool." | Documented manifest-1.6 root field (structured, not free-text). `suggestions.disabled:true` is an even cheaper parse-canary. | Republish with the flag; ask a general-knowledge Q the model knows cold; if honored it defers to tools. | Structured tool-vs-memory control (the compliance lever we've only attacked with prompt wording). |
+| **H8.14** | `optionsSets:["add_custom_instructions","update_memory_plugin","enable_inferred_memory_read"]` opens a **persistent instructions / memory channel** (a pseudo system-prompt that survives turns without re-sending). | kuchris exposes a `m365-copilot:persist` model built on exactly these. | Enable; turn 1 "remember code word sakura"; **new conversation**, ask for it; compare recall vs without. | Stateful agent persona/steering without burning context every turn. |
+| **H8.15** | The `instructions` blob has a hard **8,000-char server ceiling** (other strings 4,000) and **silently truncates** rather than erroring — which could be corrupting our baked-in tool protocol. | Manifest 1.6 explicit limit; truncation-not-rejection is the classic silent break. | Publish agents with a sentinel at offsets 3.9k / 7.9k / 8.1k / 12k chars; ask it to echo each; highest recalled offset = the cap. | De-risks our core mechanism — know how much tool-protocol fits before silent truncation. |
+| **H8.16** | `worker_agents:[{id:"<TitleId>"}]` lets one published agent **delegate to another** (multi-agent over BizChat) addressable through one `threadLevelGptId`. | New manifest-1.6 field; `id` = the TitleId we already publish against. | Publish agent B (sentinel); create A with `worker_agents:[{id:B}]`; ask A something only B does. | Router + specialized-tool-agent composition (e.g. a CodeInterpreter worker behind a router). |
+
+### 8.5 — Quota / throttling / licensing
+
+| # | Hypothesis | Why plausible | Probe | Payoff |
+|---|---|---|---|---|
+| **H8.17** | `licenseType:"Starter"` (we hardcode it) is an **internal priority-tier enum**, not a SKU; a Premium/Enterprise value buys priority-access headroom and fewer empty-reply throttles. | "Starter" isn't a customer SKU; MS docs: standard users "temporarily restricted to support priority access of premium users" — matches our self-recovering empties. | Enumerate `licenseType` values in the WS query; A/B time-to-first-empty under a fixed burst. | Directly attacks the account-level throttling. |
+| **H8.18** | The **600-cap is purely per-`conversationId`**; rotating the conversation (or chaining `conversationTransferToken`) **resets the counter to 0** with no daily/account aggregate. | No per-day chat cap is published for licensed users; counter is named "…InConversation"; transfer token implies supported state migration. | Drive one conv to ~590; rotate id → confirm reset; test whether `conversationTransferToken` carries context *without* the counter. | Sidestep the 600-cap entirely (extends F8). |
+| **H8.19** | `numLongDocSummaryUserMessagesInConversation` is a **separate, smaller sub-cap** with its own `max…` field for heavy whole-doc-context turns. | Separate counter only makes sense with its own ceiling; MS treats summarization as a distinct heavy path. | Send large-context turns; watch which counter increments; binary-search the size that flips a turn to "longDocSummary"; look for a 2nd `max…` in the same frame. | Keep heavy turns from burning the scarce summary budget; learn the context threshold. |
+| **H8.20** | The empty-reply throttle is **RPM-based with a fixed cooldown** (Studio publishes a "100 RPM — M365 Copilot users" quota the substrate may share). | Symptom (burst→empty→self-recover) matches RPM throttling. | Sweep fixed rates (10/30/60/100/120 RPM); record onset + cooldown; check for a Retry-After-like field. | A client-side rate-limiter config that *prevents* throttling vs reacting to it. |
+| **H8.21** | `&disableMemory=1` on the **WS URL** gives stateless "temporary chat" (no history; possibly different cap/Disengaged behavior). | edlaver bun-proxy README documents exactly this URL flag. | Append it; confirm no history; A/B the 600-cap and Disengaged sensitivity. | Privacy + a possible per-conversation-cap sidestep. |
+| **H8.22** | **Purview audit (`CopilotInteraction`, RecordType 261) is a model side-channel:** its `ModelTransparencyDetails.ModelName` reveals which real model served each turn (join on `ThreadId`=conversationId), and whether throttling **downgrades the model** vs dropping the turn. The Graph `getMicrosoft365CopilotUsageUserDetail` report is a usage oracle. | Audit schema carries `ModelName`/`ThreadId`/`Messages[].Size`; the WS frames hide model identity behind `tone`. | After a burst, GET Purview audit, join on ThreadId, diff `ModelName` throttled vs not. | Model-identity + usage telemetry the WS won't give us. |
+
+> **H8-guardrail (don't chase a ghost):** licensed first-party BizChat is **USL
+> flat-rate, not message-metered** — there is **no token/cost field to find** on
+> our path (resolves F5's hunt as *correctly empty*, not just unfound). Per-message
+> cost/credit telemetry only exists when invoking a *custom Copilot Studio agent*
+> under a non-licensed identity (Copilot Credits: 1/classic, 2/generative, 5/action,
+> 10/graph-grounding). If we ever want cost accounting, that's the surface — not BizChat.
+
+### 8.6 — Prioritized test order (cheap oracle → high payoff)
+
+1. **H8.9 (search toggle)** — one-line change, immediate latency/quality win, zero risk.
+2. **H8.3 (GraphicArt) / H8.13 `suggestions.disabled`** — cheap *capability-acceptance canaries*: prove the `capabilities`/`behavior_overrides` arrays are honored at all before investing in actions.
+3. **H8.1 (code interpreter via optionsSets)** — biggest new capability, testable with `variants-bisect.mjs`, no agent rebuild.
+4. **H8.13 + H8.14 (behavior_overrides + memory)** — directly target the prose-compliance bug.
+5. **H8.6 (Claude tone)** — cheap bisect, possibly a stronger coding model.
+6. **H8.17 + H8.20 (licenseType + RPM)** — attack throttling.
+7. **H8.18 (conversation rotation)** — nullify the 600-cap.
+8. **H8.4 → H8-inline → H8.5 (native actions / MCP)** — the holy grail; always inline form.
+
+### 8.7 — New probes these motivate
+
+| Probe | Tests | Cost |
+|---|---|---|
+| `optionsets-sweep.mjs` | Add wild `optionsSets`/`allowedMessageTypes` (§8.8) and diff new frame types (`GeneratedCode`, image, `SwitchRespondingEndpoint`). | ~5 msgs |
+| `search-toggle.mjs` | H8.9 — `plugins:[]`+`nosearchall` vs default; latency + `InternalSearchQuery`. | ~4 msgs |
+| `tone-claude-bisect.mjs` | H8.6 — bisect Claude/`Gpt_5_5_*` tone strings. | ~8 msgs |
+| `capability-canary.mjs` | H8.3/H8.13 — does `capabilities[]`/`behavior_overrides` in `minimalBots` create get honored? | ~2 msgs + 1 agent build |
+| `code-interpreter-probe.mjs` | H8.1/H8.2 — Python sandbox via optionsSets and via capability. | ~4 msgs |
+| `image-input-probe.mjs` | H8.10 — UploadFile → annotation → vision. | ~3 msgs |
+| `conversation-rotation.mjs` | H8.18 — does a fresh conv / transfer token reset the 600 counter? | ~6 msgs |
+| `licensetype-throttle.mjs` | H8.17/H8.20 — license enum + RPM sweep vs empty-reply onset. | bursty |
+
+### 8.8 — Reference implementations to mine (the real payloads)
+
+Live code hitting **this exact endpoint** — copy their `optionsSets`/`variants`/
+`allowedMessageTypes` verbatim and diff against ours (which sends `optionsSets:[]`).
+
+| Source | What it gives | URL |
+|---|---|---|
+| **microsoft/PyRIT** (`websocket_copilot_target.py`) | MS's own harness: concrete optionsSets, **image upload via `/m365Copilot/UploadFile`**, `messageAnnotations`. | https://github.com/microsoft/PyRIT |
+| **kuchris/m365-copilot-openai-proxy** (`substrate_client.py`) | Richest `_VARIANTS`/`_OPTIONS_SETS`/`_ALLOWED_MESSAGE_TYPES` in the wild; a `persist` model on memory flags. | https://github.com/kuchris/m365-copilot-openai-proxy |
+| **notBlubbll/g365-headless-relay** (`lib/bridge.js`) | Current `tone` map (`Gpt_5_5_*`), full optionsSets, `SwitchRespondingEndpoint`. | https://github.com/notBlubbll/g365-headless-relay |
+| **edlaver/m365-copilot-bun-proxy** (`config.json`) | `disableMemory=1` temporary-chat URL flag; `enterprise_flux_*` optionsSets. | https://github.com/edlaver/m365-copilot-bun-proxy |
+| **juzeon/SydneyQt** (`sydney/sydney.go`,`upload.go`) | Consumer-Bing lineage: default optionsSets (`codeintfile`,`sdretrieval`,`ldqa`,`gptv*`), `nosearchall` logic, `kblob` image upload. | https://github.com/juzeon/SydneyQt |
+| **Zenity Labs** writeup | Live enterprise `arguments[0]` shape (`allowedMessageTypes`, `entityAnnotationTypes`). | https://labs.zenity.io/p/access-copilot-m365-terminal |
+| **Copilot interaction audit schema** (official) | Ground-truth per-turn fields: `AISystemPlugin`, `ModelTransparencyDetails.ModelName`, `Messages[].Size`. | https://learn.microsoft.com/en-us/office/office-365-management-api/copilot-schema |
+| **Declarative agent manifest 1.6/1.7 + plugin manifest 2.4** | Capability enum (`CodeInterpreter`,`WebSearch`,`GraphicArt`,`ScenarioModels`,…), `actions`, `RemoteMCPServer`, `behavior_overrides`, `worker_agents`, instruction limits. | https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/declarative-agent-manifest-1.6 · /plugin-manifest-2.4 |
+
+> ⚠️ **Endpoint caveat:** PyRIT/kuchris/g365/edlaver hit **enterprise BizChat**
+> (`substrate.office.com/m365Copilot/Chathub`, our exact target). SydneyQt/sydney.py
+> hit **consumer Bing** (`bing.com`) — same Sydney lineage, field names transfer,
+> but image-upload host and some optionsSet availability may need the office.com
+> equivalent. Highest-confidence enterprise signals: PyRIT + the official audit schema.
