@@ -23,3 +23,6 @@ scripts/code-interp-out/
 scripts/tone-out/
 scripts/sentinel-hits.log
 scripts/sentinel-value.txt
+scripts/mcp-agent-out/
+scripts/gateway-capture-out/
+scripts/gateway-explore-out/

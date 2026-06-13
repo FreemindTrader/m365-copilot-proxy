@@ -819,6 +819,57 @@ adjacent win first: `gptCapabilities.{codeInterpreter,webBrowsing}:true` in
 `createBot` are *documented* toggles already in our payload (set `false`) — flip
 to give the tool **agent** native code-exec / web search.
 
-**Open / next:** crack the action schema (above); populate `optionsSets` on the
-main path (memory, custom-instructions, image) once verified not to break the
-agent route; the Disengaged tool-count calibration for Hermes-sized toolsets.
+**Open / next:** populate `optionsSets` on the main path (memory,
+custom-instructions, image) once verified not to break the agent route; the
+Disengaged tool-count calibration for Hermes-sized toolsets.
+
+### 8.10 — MCP / native tools: the architecture wall (June 13, conclusive)
+
+Pushed the native-action/MCP path (H8.4/H8.5) to its wall. **Infra works**
+(cloudflared quick tunnel, no account → local MCP server, `tools/list` over the
+public URL returns our tool). The blocker is *where our agent lives*:
+
+1. **Old `minimalBots` API (`2022-03-01-preview`, what `agent.ts` uses) predates
+   MCP.** It accepts a tool `DialogComponent` structurally but rejects every tool
+   dialog (`kind: McpTool` bare `serverUrl`; `TaskDialog`) with
+   `500 — out of range (Parameter 'Dialog')`. `scripts/mcp-agent-probe.mjs`.
+
+2. **The modern tool API is the Island Gateway**
+   (`powervamg.{geo}-il{island}.gateway.prod.island.powerapps.com`, ours is
+   `eu-il105`), `PUT /api/botmanagement/v1/environments/{env}/bots/{bot}/content/botcomponents`.
+   Discovered host + auth by capturing the real Copilot Studio frontend
+   (`scripts/gateway-capture.mjs`). **Auth:** token `aud`/`appid` =
+   `96ff4394-9197-43aa-b393-6a41652e21f8` (the Copilot Studio SPA's *own* app id),
+   not our `c0ab8ce9` Office-web client — so clean acquisition needs a separate
+   MSAL flow for that client (likely a one-time interactive consent). For probing
+   we borrow a live token from the authenticated browser session
+   (`scripts/gateway-explore.mjs`).
+
+3. **The wall (decisive):** our agent is a **lightweight bot**. The gateway
+   *routes* to it (`botroutinginfo → 200`, `isLightWeightBot:true`) so BizChat can
+   reach it — but it has **no Dataverse component storage**:
+   `content/botcomponents → 404 "Entity 'bot' ... Does Not Exist" /
+   StorageUnitNotAssigned`, and the full-bot list is `[]`. **MCP tools/connectors
+   live in `botcomponents`, which only full Dataverse bots have.** So MCP cannot
+   attach to the lightweight agents BizChat actually uses.
+
+**The fork (needs a decision / the user):**
+- **(A) Full Dataverse bot.** Create a full Copilot Studio bot via the gateway,
+  add the MCP tool component, publish — then test the **unverified** question:
+  *does a full Dataverse/PVA bot plug into the BizChat WS at all?* (Our docs §10
+  flagged this ❓.) If yes → MCP works; if no → MCP-over-BizChat is impossible.
+  This is the decisive next experiment.
+- **(B) M365 declarative-agent app package.** The *other* tool mechanism: package
+  the agent as a Teams/M365 app (`declarative-agent.json` + `ai-plugin.json` with a
+  `RemoteMCPServer` runtime, api-plugin manifest 2.4) and deploy via the app
+  catalog. Different pipeline entirely; BizChat-reachability of its actions also
+  unverified.
+
+**Security note (re: public tunnel = RCE):** a real MCP server exposing harness
+tools (bash, write_file) over a public tunnel is an open RCE without auth. Both
+the connector route and the manifest route support `auth: ApiKey` / `securityDefinitions`
+— wire an API key (or OAuth) before exposing anything executable. `sentinel-server.mjs`
+is harmless (read-only sentinel) and fine to leave anonymous for probing only.
+
+**Probes added:** `mcp-agent-probe.mjs`, `gateway-capture.mjs`, `gateway-explore.mjs`,
+`sentinel-server.mjs`.
