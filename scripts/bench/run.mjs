@@ -52,12 +52,14 @@ mkdirSync(OUT, { recursive: true });
 const SYSTEM = "You are an autonomous coding agent working in a real shell. Use the provided tools to actually do the task against the live filesystem. Do not ask questions. When the task is fully complete, reply with a one-line confirmation.";
 
 // --- OpenAI tools the agent is given ---
-const TOOLS = [
+const ALL_TOOLS = [
   { type: "function", function: { name: "bash", description: "Run a shell command in the working directory and get stdout/stderr.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
   { type: "function", function: { name: "read_file", description: "Read a file's contents.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
   { type: "function", function: { name: "write_file", description: "Write (create/overwrite) a file with the given contents.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
   { type: "function", function: { name: "edit_file", description: "Replace the first occurrence of `old` with `new` in a file.", parameters: { type: "object", properties: { path: { type: "string" }, old: { type: "string" }, new: { type: "string" } }, required: ["path", "old", "new"] } } },
 ];
+const TOOLSET = opt("--tool-set", "");  // e.g. "bash" to test a lean payload
+const TOOLS = TOOLSET ? ALL_TOOLS.filter(t => TOOLSET.split(",").includes(t.function.name)) : ALL_TOOLS;
 
 function execTool(name, a, sandbox, cid) {
   try {

@@ -874,6 +874,46 @@ is harmless (read-only sentinel) and fine to leave anonymous for probing only.
 **Probes added:** `mcp-agent-probe.mjs`, `gateway-capture.mjs`, `gateway-explore.mjs`,
 `sentinel-server.mjs`.
 
+### 8.12 — Benchmark baseline: tool-call compliance is ~0 on realistic tasks 🟢
+
+The `scripts/bench/` harness (validated against a mock — it scores SOLVED when a
+real tool call arrives) run against the default proxy:
+
+| config | result | outcomes |
+|---|---|---|
+| baseline (magic, 4 tools) | **0/5** | 3 GAVE_UP_PROSE, 2 disengage |
+| bash-only (lean payload) | **0/3** | 2 prose, 1 disengage |
+| few-shot ON (`M365_KEEP_FEWSHOT=1`) | **0/3** | 2 prose, 1 disengage |
+
+**Zero tool calls across all three.** The raw model output (trace) is pure prose —
+e.g. *"Created fizzbuzz.py and executed it with python3."* with `hasToolCalls=false`
+— the magic/DeepLeo model **claims completion without emitting any tool JSON**,
+flatly violating its injected "never claim done without a tool_response" rule.
+
+**Disproved levers:** tool count (H5) and few-shot (H2) — neither moves it. So the
+0-compliance is **not** a tuning problem; it's the model being a chat-assistant
+that answers rather than an agent that acts, on familiar coding tasks.
+
+**Outcome pattern:** *fakeable* tasks (fizzbuzz, count-lines) → hallucinate success;
+*unfakeable* tasks (edit-config, find-needle — need to read real files) → Disengage.
+Either way, no tool call.
+
+**Discrepancy to explain:** the June-9 `tool-compliance-experiment.mjs` scored
+~3/3 "compliant" with crafted single-turn prompts (§F2–F4), yet realistic
+multi-turn agentic tasks score 0. Compliance is evidently prompt-shape-sensitive;
+the crafted-prompt number did not generalise to real agent loops.
+
+**Caveat:** measured while the account was heavily used (disengaging on every
+`edit-config` run) — re-baseline on a fresh account/day before treating the exact
+counts as load-bearing. The *prose-hallucination* failure is model behaviour, not
+throttle, and reproduced every run.
+
+**Next (needs code, run on a fresh account):** H4 — the fenced ` ```bash `/` ```edit `
+format vs JSON, head-to-head on the bench. Config levers are exhausted; format/prompt
+redesign is the remaining lever.
+
+---
+
 ### 8.11 — Both native-tool paths CLOSED on this tenant (June 13, conclusive)
 
 Ran both forks to a definitive end. **Both are blocked**, for independent reasons.
