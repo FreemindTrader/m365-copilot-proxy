@@ -16,6 +16,13 @@ import { createLogger, trunc } from "./log.js";
 const RS = "\x1E";
 const log = createLogger("session");
 
+// The exact frame the real m365.cloud.microsoft "Stop generating" button sends
+// (captured June 2026, scripts/cancel-frame-capture.mjs). It's a normal type:1
+// invocation with target "stop" and invocationId "1" (distinct from chat's "0"),
+// sent on the same socket; the server acks with a type:3 completion and discards
+// the partial answer. See docs/m365-copilot-api.md §6 and hypotheses.md F11.
+const STOP_FRAME = JSON.stringify({ arguments: [{}], invocationId: "1", target: "stop", type: 1 }) + RS;
+
 // --- Optional per-request frame dumping for reverse engineering ---
 // Enabled by M365_DUMP_FRAMES=1. Every SignalR frame received is appended to a
 // per-request NDJSON file under ~/.config/opencode-m365/frames/. Cheap to run
@@ -115,7 +122,7 @@ export class CopilotSession {
    * Each turn opens a fresh WebSocket with invocationId "0" (per SignalR protocol).
    * Session/conversation IDs are reused so M365 maintains server-side context.
    */
-  chat(token: string, text: string, model: string = "m365-copilot"): Promise<CopilotStream> {
+  chat(token: string, text: string, model: string = "m365-copilot", signal?: AbortSignal): Promise<CopilotStream> {
     const isFirst = this._turnCount === 0;
     this._turnCount++;
 
@@ -255,6 +262,34 @@ export class CopilotSession {
       });
 
       let handshakeDone = false;
+      let stopped = false;
+
+      // Cancellation: when the caller's signal aborts (HTTP client disconnected),
+      // cancel the in-flight M365 turn the same way the real UI does — send the
+      // Stop frame, then let the server's type:3 ack close the socket (with a
+      // hard-close fallback). Before the handshake completes there's nothing to
+      // stop, so just close.
+      const onAbort = () => {
+        if (stopped) return;
+        stopped = true;
+        try {
+          if (ws.readyState === WebSocket.OPEN && handshakeDone) {
+            log.info("Aborted — sending Stop frame to cancel the turn");
+            dumpFrame(requestId, { target: "stop", type: 1 }, "send");
+            ws.send(STOP_FRAME);
+            setTimeout(() => { try { ws.close(); } catch {} }, 2_000);
+          } else {
+            try { ws.close(); } catch {}
+          }
+        } catch {
+          try { ws.close(); } catch {}
+        }
+      };
+      if (signal) {
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      }
+      const clearAbort = () => signal?.removeEventListener("abort", onAbort);
 
       ws.on("open", () => {
         log.debug("WS connected, sending handshake");
@@ -306,6 +341,7 @@ export class CopilotSession {
       });
 
       ws.on("close", () => {
+        clearAbort();
         log.info("WS closed, fullText length:", fullText.length);
         log.debug("Final response:", trunc(deltaText || fullText, 1000));
         onDone?.();

@@ -50,8 +50,12 @@ export class ModelSession {
     });
   }
 
-  /** Send text to M365 Copilot and stream back the response. */
-  async run(text: string, model: string = "m365-copilot"): Promise<CopilotStream> {
+  /**
+   * Send text to M365 Copilot and stream back the response.
+   * If `signal` aborts (e.g. the HTTP client disconnects), the in-flight turn is
+   * cancelled by sending M365's Stop frame, mirroring the real UI's Stop button.
+   */
+  async run(text: string, model: string = "m365-copilot", signal?: AbortSignal): Promise<CopilotStream> {
     const token = await this.resolveToken();
 
     // Resolve agent ID lazily (persists across resets)
@@ -73,12 +77,12 @@ export class ModelSession {
     log.info(`run: model=${model}, turn=${this.copilotSession.turnCount}, sid=${this.sessionId}, cid=${this.conversationId}, text=${JSON.stringify(trunc(text, 200))}`);
 
     try {
-      return await this.copilotSession.chat(token, text, model);
+      return await this.copilotSession.chat(token, text, model, signal);
     } catch (err: any) {
       // Session might be stale — reconnect with same IDs
       log.info("Session error, reconnecting:", err.message);
       this.copilotSession = this.createCopilotSession();
-      return await this.copilotSession.chat(token, text, model);
+      return await this.copilotSession.chat(token, text, model, signal);
     }
   }
 

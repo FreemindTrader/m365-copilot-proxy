@@ -23,6 +23,14 @@ export {
 /** Static body for `GET /health`. */
 export const HEALTH_PAYLOAD = { status: "ok" } as const;
 
+// Window/output hints surfaced to harnesses on /v1/models so they can size
+// context packing and output expectations. Empirically (docs/hypotheses.md F9):
+// M365 accepts ≥500k tokens of input (retrieval-backed) but soft-caps output
+// around ~3k tokens. We advertise a conservative-but-honest 128k window (well
+// within the measured floor) and the ~3k output cap. Override via env.
+const CONTEXT_WINDOW_TOKENS = Number(process.env.M365_CONTEXT_WINDOW) || 128_000;
+const MAX_OUTPUT_TOKENS = Number(process.env.M365_MAX_OUTPUT_TOKENS) || 3_000;
+
 /** Build the OpenAI-compatible `GET /v1/models` payload. */
 export function buildModelsPayload() {
   const created = Math.floor(Date.now() / 1000);
@@ -33,6 +41,13 @@ export function buildModelsPayload() {
       object: "model",
       created,
       owned_by: "microsoft",
+      // Non-standard but widely-read by OpenAI-compatible harnesses. Several
+      // aliases because clients disagree on the key name. Unknown keys are
+      // ignored by strict clients.
+      context_window: CONTEXT_WINDOW_TOKENS,
+      max_context_length: CONTEXT_WINDOW_TOKENS,
+      max_input_tokens: CONTEXT_WINDOW_TOKENS,
+      max_output_tokens: MAX_OUTPUT_TOKENS,
     })),
   };
 }
@@ -99,7 +114,8 @@ export function createApp(sessionOptions: ModelSessionOptions = {}): FetchApp {
           json(400, { error: { message: err.message, type: "invalid_request_error" } }),
         );
       }
-      return withCors(await handleChatCompletion(body, pool));
+      // req.signal aborts when the client disconnects → cancels the M365 turn.
+      return withCors(await handleChatCompletion(body, pool, { signal: req.signal }));
     }
 
     return withCors(

@@ -12,6 +12,25 @@ import type { z } from "zod/v4";
 
 const log = createLogger("handler");
 
+// M365 soft-caps output around ~3k tokens (~12k chars) and — critically —
+// CONCLUDES EARLY rather than truncating mid-stream, so a too-long answer comes
+// back clean-looking but incomplete with no error to detect (docs/hypotheses.md
+// F9). We can't see token counts, so we heuristically flag responses at/over the
+// observed ceiling with finish_reason:"length" — the standard signal a harness
+// uses to ask for a continuation. Tune/disable via env (0 disables).
+const OUTPUT_CHAR_CEILING = process.env.M365_OUTPUT_CHAR_CEILING !== undefined
+  ? Number(process.env.M365_OUTPUT_CHAR_CEILING)
+  : 12_000;
+
+/** "length" when the answer is at/over the empirical output ceiling, else "stop". */
+function outputFinishReason(text: string): "stop" | "length" {
+  if (OUTPUT_CHAR_CEILING > 0 && text.length >= OUTPUT_CHAR_CEILING) {
+    log.info(`Output at ceiling (${text.length} ≥ ${OUTPUT_CHAR_CEILING} chars) — finish_reason=length (likely truncated; harness should continue)`);
+    return "length";
+  }
+  return "stop";
+}
+
 type ChatBody = z.infer<typeof ChatCompletionRequest>;
 type ParsedMessage = ChatBody["messages"][number];
 
@@ -127,6 +146,7 @@ function formatDeltaMessages(messages: ParsedMessage[]): string {
 export async function handleChatCompletion(
   body: ChatBody,
   pool: SessionPool,
+  opts: { signal?: AbortSignal } = {},
 ): Promise<Response> {
   const conv = pool.resolve(body.messages);
   const { session } = conv;
@@ -179,7 +199,7 @@ export async function handleChatCompletion(
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       let copilotStream;
       try {
-        copilotStream = await session.run(text, model);
+        copilotStream = await session.run(text, model, opts.signal);
       } catch (err: any) {
         return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
       }
@@ -283,7 +303,7 @@ export async function handleChatCompletion(
         } else {
           return jsonResponse(200, {
             id: completionId, object: "chat.completion", created, model,
-            choices: [{ index: 0, message: { role: "assistant", content: replyText }, finish_reason: "stop" }],
+            choices: [{ index: 0, message: { role: "assistant", content: replyText }, finish_reason: outputFinishReason(replyText) }],
             usage: buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount),
           });
         }
@@ -329,7 +349,7 @@ export async function handleChatCompletion(
       } else {
         return jsonResponse(200, {
           id: completionId, object: "chat.completion", created, model,
-          choices: [{ index: 0, message: { role: "assistant", content: fullText }, finish_reason: "stop" }],
+          choices: [{ index: 0, message: { role: "assistant", content: fullText }, finish_reason: outputFinishReason(fullText) }],
           usage: buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount),
         });
       }
@@ -348,7 +368,7 @@ export async function handleChatCompletion(
 
     return jsonResponse(200, {
       id: completionId, object: "chat.completion", created, model,
-      choices: [{ index: 0, message: { role: "assistant", content: result.fullText }, finish_reason: "stop" }],
+      choices: [{ index: 0, message: { role: "assistant", content: result.fullText }, finish_reason: outputFinishReason(result.fullText) }],
       usage: buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount),
     });
   }
@@ -481,6 +501,7 @@ function streamToolCalls(
 function streamText(
   completionId: string, created: number, model: string, text: string,
 ): ReadableStream {
+  const finishReason = outputFinishReason(text);
   return new ReadableStream({
     start(controller) {
       const enc = new TextEncoder();
@@ -495,7 +516,7 @@ function streamText(
       })}\n\n`));
       controller.enqueue(enc.encode(`data: ${JSON.stringify({
         id: completionId, object: "chat.completion.chunk", created, model,
-        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
       })}\n\n`));
       controller.enqueue(enc.encode("data: [DONE]\n\n"));
       controller.close();
