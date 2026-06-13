@@ -222,6 +222,17 @@ See §7.
 ### End of turn
 A `type:2` (stream item), `type:3` (completion), or `type:7` (close) ends the turn; we close the socket. Reply to `type:6` pings in the meantime.
 
+### Cancelling a turn (the "Stop generating" button)
+Captured from the real `m365.cloud.microsoft` client (June 2026, `scripts/cancel-frame-capture.mjs`): clicking **Stop generating** sends a single frame **on the same socket**, then the client closes it:
+```
+{"arguments":[{}],"invocationId":"1","target":"stop","type":1}\x1E
+```
+Notes:
+- It's a normal **`type:1` invocation** with `target:"stop"` and **`invocationId:"1"`** (distinct from the chat invocation's `"0"`) — *not* a SignalR `CancelInvocation` (type 5) and *not* a bare socket close.
+- The server **acks with a `type:3` completion** (no error) and replaces the in-progress bot message with the canned text **"You have stopped this conversation."** — the partial answer is discarded.
+- **The cancelled user message still counts** against the 600-msg/conv quota, but its **context persists** server-side (a secret planted in a cancelled turn is recallable next turn). See `docs/hypotheses.md` F11.
+- **Implemented (June 2026):** the proxy now propagates an HTTP-client disconnect as an `AbortSignal` (`completions.post.ts` → `handler` → `model.ts` → `session.ts`); on abort it sends this Stop frame and closes (`STOP_FRAME` in `session.ts`). Before this, every turn ran to a terminator before `ws.close()` and a caller's abort orphaned the generation.
+
 ### `type:2` stream item — the conversation summary
 
 The final `type:2` frame carries the canonical state of the whole conversation in `item`:
@@ -259,7 +270,10 @@ The final `type:2` frame carries the canonical state of the whole conversation i
 
 The single biggest gotcha for agentic use.
 
-When M365 dislikes a prompt — too large, or **looks like a jailbreak / prompt injection** — it returns a bot message:
+When M365 dislikes a prompt — **looks like a jailbreak / prompt injection**, or carries a heavy tool block — it returns a bot message:
+
+> **Update (June 2026, F10):** *raw size alone does not trigger Disengaged.* 2M chars (~500k tokens) of benign filler never disengaged and never raised `dea_violation`. The trigger is **shape** (jailbreak framing, large *tool-block* count), not byte count. Read the "too large" lore below as "too large **and** tool-block-shaped." See `docs/hypotheses.md` F9/F10.
+
 ```json
 { "author": "bot", "messageType": "Disengaged",
   "hiddenText": "> Conversation disengaged", "offense": "None" }
@@ -370,6 +384,8 @@ Evidence (`scripts/dataverse-bot-probe.mjs`, with a `<org>.crm4.dynamics.com/.de
 | 16 | Empty reply ≠ rate limit unless throttle is at-limit; otherwise fail fast (don't burn 60s of retries) | `handler.ts` |
 | 17 | M365 invents `{"confidence":N}` / `{"final":"…"}` JSON and batches calls + premature `✅ SUCCESS`; proxy strips them + enforces one call/turn | `tools.ts`/`handler.ts` |
 | 18 | **Deleted-agent trap:** a long-lived host caches its agent id for life (`reset()` won't clear it) and can't self-heal when its bot is cleaned up; dead agent → instant empty reply (`throttle:null`, ~0.7s) misread as "rate limited". Restart, or clear `cachedAgentId` on empty | `model.ts`/§10 |
+| 19 | **Cancel** = send `{"type":1,"target":"stop","invocationId":"1","arguments":[{}]}` then close; server acks `type:3` and wipes the partial answer. Still costs 1/600; context persists. **Proxy now sends this on client-abort** | §6/F11 |
+| 20 | **I/O is asymmetric:** input is retrieval-backed ≥500k tokens (benign size never Disengages); output soft-caps ~3k tokens by *concluding early*, not truncating — so big writes look complete but aren't. Proxy advertises 128k window + emits `finish_reason:"length"` near the cap | §6/F9/F10 |
 
 ---
 

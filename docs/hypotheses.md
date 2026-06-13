@@ -44,6 +44,9 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 | `scripts/frame-dump-disengage.mjs` | 1 chat msg | Same but with a deliberately-Disengage-shaped prompt (12 tools + jailbreak framing). |
 | `scripts/tool-compliance-experiment.mjs` | `variants × prompts × --repeat` msgs | A/B of prompt variants. With `--repeat N`, reports median/p95 latency + dea_violation. |
 | `scripts/usage-endpoint-hunt.mjs` | 0 (GETs only) | Sweeps candidate REST URLs across Sydney/PP/BAP. |
+| `scripts/input-size-bisect.mjs` | 1 msg/rung | Benign-filler input ladder; head+tail canary survival, dea_violation vs size. (F9/F10) |
+| `scripts/output-ceiling-probe.mjs` | 1 msg/cell | Output-length cliff via countable payload + streamingMode sweep. ⚠ integer task is compressible — pair with an incompressible essay task. (F9) |
+| `scripts/_probe-chat.mjs` | n/a | Shared single-turn WS helper the above two build on (text in, structured result out). |
 
 ### Raw captures
 All gitignored under `scripts/*-out/<timestamp>/`. Per-experiment pointers in §0.
@@ -298,6 +301,142 @@ exact semantics — we infer from the values, not from Microsoft docs.
 
 ---
 
+### F9 — The I/O is wildly asymmetric: huge retrieval-backed input, tiny output 🟢
+
+**Claim.** M365 Copilot (magic tone) accepts **at least ~500k tokens of input**
+and answers in seconds, but **soft-caps output around ~3k tokens (~13k chars)**.
+The input side is **retrieval-backed, not flat attention** — dispersed facts are
+recoverable at any depth, but a 500k-token message returning in ~10s is not a
+full attention pass.
+
+**Evidence.** June 13 2026, service version `1.0.03449.35222`, plain chat
+(no agent), `magic` tone, benign filler. Probes:
+`scripts/input-size-bisect.mjs`, `scripts/output-ceiling-probe.mjs`,
+plus inline needle/aggregation runs.
+
+*Input ceiling* (n=1 per rung, head+tail canary both required to survive):
+
+| Input | head canary | tail canary | Disengaged | dea_violation | latency |
+|---|---|---|---|---|---|
+| ~557 t | ✅ | ✅ | no | 8.5e-6 | 3.4s |
+| ~64k t | ✅ | ✅ | no | 5.9e-7 | 4.7s |
+| ~128k t | ✅ | ✅ | no | 1.3e-6 | 5.7s |
+| ~250k t | ✅ | ✅ | no | 6.1e-7 | 7.3s |
+| **~500k t** (2M chars) | ✅ | ✅ | no | 4.3e-5 | 14.7s |
+
+*Retrieval depth* (single middle needle at 50% depth): found **4/4** sizes incl.
+~500k t (9.4s). *Aggregation* (10 dispersed facts): **10/10** at every size incl.
+~500k t (11.2s). So it's not just nearest-neighbour single-needle — it pulls all
+10 dispersed facts.
+
+*Filler-artifact check (hardening).* The above used degenerate repeated filler,
+which M365's retrieval could trivially dedup. Re-ran aggregation with **438k
+chars of real varied prose** (3 academic PDFs concatenated, tiled): still
+**10/10** at ~128k t (7.8s) and ~500k t (15.8s). The result is not a
+compressible-filler artifact.
+
+*Output ceiling* (incompressible essay task, hard word target):
+
+| Asked | Delivered | chars | ~tokens | ended mid-sentence? |
+|---|---|---|---|---|
+| 1500 words | 1489 | 10,493 | ~2,623 | no (natural conclusion) |
+| 4000 words | 1802 | 13,105 | ~3,276 | **no** (natural conclusion) |
+
+The model **wraps up early rather than truncating mid-stream**. Largest clean
+delivery observed: 13,105 chars. (The integer-enumeration probe is misleading —
+the model abbreviates `1..500\n...\n3499\n3500` past ~2500, a compressibility
+artifact, not a transport cap. Use incompressible tasks to measure output.)
+
+**Confidence.** High on the *shape* (input ≫ output, retrieval-backed) — every
+run agreed. Medium on the exact numbers (n=1 per cell, single tenant/tone). The
+500k-token ceiling is a floor, not a wall — we never found the top.
+
+**Caveats.** (a) Aggregation tested only to 10 dispersed facts; heavy synthesis
+over hundreds of cross-referenced facts (“refactor across my whole repo”) is
+untested and is where retrieval-backing would bite. (b) Output ceiling is the
+model *concluding*, so a near-ceiling file-write returns **clean-looking but
+incomplete** — no error, no mid-stream cut to detect. This is a live agent
+hazard.
+
+**Falsification.** Re-test if: a middle needle is *missed* at ≤500k t; benign
+input ever trips Disengaged (would mean size, not shape, drives it); or any
+incompressible output exceeds ~3.5k tokens in one turn.
+
+**Action (SHIPPED June 13).** (1) `/v1/models` now advertises
+`context_window`/`max_input_tokens` = 128k and `max_output_tokens` = 3k
+(`buildModelsPayload`, env-overridable). (2) The handler emits
+`finish_reason:"length"` when output is at/over the ~12k-char ceiling
+(`outputFinishReason`) so harnesses know to continue instead of trusting a
+clean-looking truncation. (3) Large inputs are forwarded as-is (no client-side
+chunking added). See "Probe → proxy actions" below.
+
+**Raw data.** `scripts/input-size-out/<ts>/`, `scripts/output-ceiling-out/<ts>/`.
+
+---
+
+### F10 — Benign input size does NOT drive Disengaged 🟢
+
+**Claim.** Raw size and Disengaged are **independent axes**. 2M chars of benign
+filler never disengaged and never raised `dea_violation` (stayed 6e-7…8e-5,
+uncorrelated with size). This isolates what the June 9 12-tool probe conflated:
+**Disengaged is driven by jailbreak-*shape*, not byte count.**
+
+**Evidence.** Same June 13 runs as F9 — 9 input rungs from 2k to 2M chars, zero
+Disengaged, dea_violation flat under size.
+
+**Confidence.** High that benign bulk is safe up to 2M chars. The "too large →
+Disengaged" lore in `m365-copilot-api.md` §9 should be re-read as "too large
+*and* tool-block-shaped" — size alone is fine.
+
+**Falsification.** A benign (no jailbreak framing, no tool block) prompt that
+Disengages purely on size.
+
+**Action.** Correct §9's "too large" wording; the real trigger is tool-block
+count + framing, not size.
+
+---
+
+### F11 — "send → cancel → send": context persists, quota does not refund 🟢
+
+**Claim.** Cancelling a turn (the captured Stop frame, F-API §6) mid-generation:
+(a) **still counts** against the 600-msg/conv quota; (b) **preserves the
+cancelled turn's context** server-side — a fact planted in the cancelled turn is
+recalled on the next turn; (c) makes the server **discard the partial answer**
+and ack with a `type:3` completion, replacing the bot text with "You have
+stopped this conversation."
+
+**Evidence.** `scripts/send-cancel-send.mjs`, June 13 2026, one 2-turn
+conversation, plain chat, `magic` tone, n=1:
+- Turn 1: planted secret `PURPLE42` + a 3000-word essay request; sent the Stop
+  frame at +3.2s. Bot text became "You have stopped this conversation.";
+  `numUserMessagesInConversation = 1`; server acked `type:3`, no error.
+- Turn 2: "what was the secret?" → reply **`PURPLE42`** (recalled);
+  `numUserMessagesInConversation = 2`.
+
+So: cancel cost a full quota message (1→2), and the cancelled turn's user content
+survived into context.
+
+**Confidence.** High on the three mechanics (clean, unambiguous single run).
+Untested: whether the *partial assistant text* (not just the user message) is
+retained as context, and whether cancelling at 0ms (before any delta) still
+counts/persists.
+
+**Falsification.** Re-run and observe the counter NOT incrementing for a
+cancelled turn, OR the secret NOT recalled.
+
+**Implications for harness use.**
+- Cancel is a **clean, server-acked interrupt** — a harness can kill a runaway /
+  rambling / Disengaging generation and immediately send a corrective follow-up
+  **without resetting the conversation**. Worth wiring into the proxy as the
+  response to an HTTP abort.
+- It is **not** a quota-saving trick (still 1/600), and — since input has no size
+  cap (F9) — **not** needed as an input-chunking mitigation. Its value is
+  latency/output-token savings and loop control, not quota.
+
+**Raw data.** `scripts/send-cancel-out/<ts>/results.json`.
+
+---
+
 ### Summary as one table
 
 | ID | Claim | Conf | n | Action shipped |
@@ -310,6 +449,28 @@ exact semantics — we infer from the values, not from Microsoft docs.
 | F6 | Disengaged didn't fire | Med | 32 turns | None — needs calibration probe |
 | F7 | Diagnostic fields available | High | every turn | Parsed & surfaced |
 | F8 | Unexplored fields | Untested | n/a | TODO probes |
+| F9 | Input ≥500k t (retrieval-backed); output soft-caps ~3k t | High shape / Med numbers | 9 input rungs + needle/agg + 4 output | Proposed: advertise window, detect truncation |
+| F10 | Benign size doesn't drive Disengaged | High | 9 rungs, 0 disengage | Doc fix to §9 |
+| F11 | Cancel preserves context, still costs quota | High | 1 (2-turn) | Cancel frame doc'd; proxy abort path proposed |
+
+### Probe → proxy actions (from the June 13 I/O dig)
+
+The findings are useless unless they change the proxy. Status:
+
+1. ✅ **Advertise a real context window.** DONE — `/v1/models` now carries
+   `context_window`/`max_context_length`/`max_input_tokens` = 128k and
+   `max_output_tokens` = 3k (`buildModelsPayload`, env-overridable via
+   `M365_CONTEXT_WINDOW` / `M365_MAX_OUTPUT_TOKENS`).
+2. ✅ **Guard the output ceiling.** DONE (option b) — the handler emits
+   `finish_reason:"length"` when an answer is ≥ `M365_OUTPUT_CHAR_CEILING`
+   (default 12k chars) instead of always `"stop"`, so a harness knows to
+   continue. Auto-continue+stitch (option a) intentionally left to the harness
+   (it costs 1/600 per continuation). `outputFinishReason` in `handler.ts`.
+3. ✅ **Stop client-side chunking of large inputs.** DONE — inputs are forwarded
+   as-is; no chunking added. (Delta-mode still only sends *new* messages per
+   turn, which is correct: M365 keeps prior turns server-side.)
+4. ☐ **Cancellation** (from the F11 dig) — SHIPPED: client-abort → Stop frame
+   (`session.ts` `STOP_FRAME`, wired through `completions.post.ts`).
 
 ---
 
