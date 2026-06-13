@@ -286,6 +286,39 @@ The final `type:2` frame carries the canonical state of the whole conversation i
 - This is why we **reuse one conversation** across an agent session and send **only new messages** on follow-up turns (delta mode) — every `Please continue.` retry also counts against the 600.
 - There is also opaque **account-level throttling** (rapid-fire requests can start returning empties). It recovers on its own.
 
+### Account degradation under sustained use (observed June 13 2026)
+
+A full session of heavy use (~80+ messages across probes, bench runs, and logins
+in a few hours) drives the account into a **degraded state** that is distinct from
+the per-conversation 600 cap (which we never approached — every probe used a fresh
+conversation at `1/600`). Characterised behaviour:
+
+- **Onset:** progressive. Early in the session responses were clean; after
+  sustained activity, turns increasingly return **`Disengaged` (→ proxy 502) or
+  empty replies**, even for benign single-tool prompts and fresh conversations.
+- **Signature:** in the benchmark, *work-requiring* tasks (`edit-config`,
+  `find-needle` — must read a real file) **Disengaged on every run** once degraded,
+  while trivial/ fakeable tasks still returned (prose). So degradation manifests as
+  the Disengaged filter firing far more readily, not as an explicit rate-limit error.
+- **Recovery:** self-heals with a lull (a clean `pong` returned after a ~15-min
+  idle gap mid-session). No action needed; just wait.
+- **NOT token-related:** regenerating the MSAL token does **not** clear it — the
+  fresh token carries the same `oid`, so it lands in the same identity-keyed bucket
+  (see §2, `scripts/token-regen-probe.mjs`). Re-auth is not a recovery lever.
+- **NOT the 600 cap:** the per-conversation counter stays low; this is an
+  account/identity-level governor.
+
+**Operational implications.**
+- Treat a sudden rise in `Disengaged`/empty across *fresh* conversations as
+  degradation, not as a content/format problem — **back off and wait**, don't retry
+  (retrying burns quota and re-disengages; the proxy now fails fast on Disengaged).
+- **It confounds experiments.** A/B results gathered while degraded are unreliable
+  (a `Disengaged` can be misread as a format/prompt failure). Run comparative
+  experiments (bench A/Bs) on a **rested account**, and pace requests.
+- The exact trigger (cumulative volume vs requests-per-minute vs a sliding window)
+  is **unquantified** — characterise it with the throttle experiment
+  (`docs/experiments.md` E-T1 / `scripts/throttle-probe.mjs`; hypotheses §8 H8.20).
+
 ---
 
 ## 8. Conversations & sessions

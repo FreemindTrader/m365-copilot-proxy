@@ -29,6 +29,9 @@ hypothesis that teaches us something.
 - **Log every hypothesis in [`docs/hypotheses.md`](docs/hypotheses.md)** with a
   falsification criterion and a probe idea; update it when an experiment lands
   (confirmed / disproved, with sample size + evidence pointer).
+- **[`docs/experiments.md`](docs/experiments.md) is the runnable catalog** — each
+  experiment is a hypothesis + exact commands + how to read the result. Reach for
+  it to *run* something; add to it when you design a new experiment.
 - **Probes live in `scripts/`** — small, single-purpose, read-mostly. Reuse
   `scripts/_probe-chat.mjs` (one M365 turn in → structured result out; supports
   `optionsSets` / `extraAllowed` / `plugins` / `variants` / `tone` / agent
