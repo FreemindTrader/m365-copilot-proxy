@@ -55,10 +55,9 @@ per-request injection and answers in prose (or hallucinates). See
 These instructions are baked in at agent-creation time and can't be cheaply updated in
 place, so the agent is **versioned by name**: it's called `m365-tool-agent-<hash>`, where
 `<hash>` is a short SHA-256 of the current instructions. Editing `getAgentInstructions()`
-changes the hash, so the next request provisions a fresh agent and a cleanup pass retires
-the stale ones. Hosts sharing a tenant compute the same name for the same instructions and
-converge on one agent with no coordination. Set `M365_AGENT_NO_CLEANUP` to keep old
-versions around (e.g. while several hosts on different versions share a tenant).
+changes the hash, so the next request provisions a fresh agent; old versions are **never
+deleted** (multi-host safety — a second proxy may still be using one). Hosts sharing a tenant
+compute the same name for the same instructions and converge on one agent with no coordination.
 
 ### 3. Fail-Closed Parsing & Output Hardening (packages/proxy-lib/src/handler.ts, tools.ts)
 

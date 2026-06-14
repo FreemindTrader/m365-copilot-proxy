@@ -221,8 +221,6 @@ Three token scopes are acquired:
 | `M365_DEBUG` | Set to `1` to enable debug logging to `~/.config/opencode-m365/debug.log` (truncated payloads) |
 | `M365_TRACE` | Set to `1` for full, untruncated debug logging (every WS frame/prompt/response) — implies `M365_DEBUG`. For reverse engineering. |
 | `M365_DUMP_FRAMES` | Set to `1` to write every WebSocket frame (both directions) to `~/.config/opencode-m365/frames/<requestId>.ndjson`. For offline diffing of new M365 fields. |
-| `M365_NO_INTERACTIVE` | Set to `1` to forbid the visible-browser login fallback (automated runs fail loudly instead of hanging) |
-| `M365_AGENT_NO_CLEANUP` | Skip deleting stale `m365-tool-agent-*` versions (use during staggered multi-host rollouts) |
 | `M365_ALLOW_MULTI_TOOL` | Allow the model to emit multiple tool calls per turn (default: only the first is kept) |
 | `M365_INJECT_REPLY_TOOL` | Set to `1` to inject a synthetic `reply(text)` tool. Forces every turn to be a tool call, including pure-prose answers. Cleaner contract for the model, +1 tool to the prompt (watch the Disengaged threshold). Confirmed 5/5 compliance on June 9 2026 ([hypotheses §1.1](docs/hypotheses.md)). |
 | `M365_NO_CONFAB_RETRY` / `M365_CONFAB_RETRIES` | M365's chat model sometimes confabulates an inability to act ("I can't access the files, please paste them") on turn 1 without calling a tool, even though the environment is real. By default the proxy detects this and re-prompts forcefully **in the same conversation** once (`M365_CONFAB_RETRIES`, default `1`) to salvage the turn. Set `M365_NO_CONFAB_RETRY=1` to disable. |

@@ -371,41 +371,6 @@ async function publishBot(
 }
 
 /**
- * Best-effort deletion of stale versions of our agent — any bot whose name is
- * AGENT_BASE_NAME or AGENT_BASE_NAME-<oldhash>, except the one we just settled
- * on. Keeps the tenant from accumulating a dead bot per instruction change.
- * Failures (e.g. a bot still in use by another host mid-deploy) are tolerated.
- * Set M365_AGENT_NO_CLEANUP to skip this entirely.
- */
-async function cleanupStaleAgents(
-  envUrl: string,
-  ppToken: string,
-  bots: Array<{ botId: string; shortBotName: string }>,
-  keepBotId: string,
-): Promise<void> {
-  if (process.env.M365_AGENT_NO_CLEANUP) return;
-  const stale = bots.filter(
-    (b) =>
-      b.botId !== keepBotId &&
-      (b.shortBotName === AGENT_BASE_NAME ||
-        b.shortBotName?.startsWith(`${AGENT_BASE_NAME}-`)),
-  );
-  for (const b of stale) {
-    try {
-      const res = await ppFetch(
-        `${envUrl}/copilotstudio/minimalBots/api/${b.botId}?api-version=2022-03-01-preview`,
-        ppToken,
-        { method: "DELETE" },
-      );
-      if (res.ok) log.info(`Deleted stale agent ${b.shortBotName} (${b.botId})`);
-      else log.info(`Could not delete stale agent ${b.shortBotName}: ${res.status}`);
-    } catch (e: any) {
-      log.info(`Cleanup error for ${b.shortBotName}: ${e.message}`);
-    }
-  }
-}
-
-/**
  * Get or create the tool-calling agent for the CURRENT instructions.
  * The agent is versioned by name (AGENT_BASE_NAME-<instructionsHash>), so editing
  * getAgentInstructions() transparently provisions a fresh agent on the next call
@@ -492,13 +457,11 @@ export async function getOrCreateAgent(
     const agentId = `${titleId}.${botId}.gpt.default`;
     log.info(`Full agent ID: ${agentId}`);
 
-    // Cache it, then retire any older-version agents. A forceRefresh is a
-    // self-heal of THIS host; skip cleanup so a recovering host doesn't delete
-    // agents that other (e.g. newer-build) hosts are actively using.
+    // Cache it. Stale older-version agents are intentionally LEFT in place — never
+    // deleted — so a second proxy (other PC / build) sharing this tenant can't have
+    // the agent it's mid-conversation with pulled out from under it. A few orphaned
+    // lightweight bots are harmless; a deleted in-use agent breaks the other host.
     saveCachedAgent({ agentId, botId, instructionsHash: wantHash, createdAt: new Date().toISOString() });
-    if (!opts.forceRefresh) {
-      await cleanupStaleAgents(envUrl, ppToken, bots, botId);
-    }
     return agentId;
   } catch (err: any) {
     log.error("Agent creation failed:", err.message, err.cause?.message || "");

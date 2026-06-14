@@ -2,7 +2,6 @@ export {
   getToken,
   getTokenSilent,
   getTokenForScope,
-  loginInteractive,
   loginAutomated,
   loadSecrets,
   forceReauth,

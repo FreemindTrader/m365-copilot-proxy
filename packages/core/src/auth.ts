@@ -5,7 +5,7 @@ import {
   existsSync,
   mkdirSync,
 } from "node:fs";
-import { exec, execSync } from "node:child_process";
+import { execSync } from "node:child_process";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -74,37 +74,6 @@ async function buildAuthUrlForScopes(app: msal.PublicClientApplication, scopes: 
   });
 
   return { authUrl, verifier };
-}
-
-async function buildAuthUrl(app: msal.PublicClientApplication) {
-  const cryptoProvider = new msal.CryptoProvider();
-  const { verifier, challenge } = await cryptoProvider.generatePkceCodes();
-
-  const authUrl = await app.getAuthCodeUrl({
-    scopes: SCOPES,
-    redirectUri: REDIRECT_URI,
-    codeChallenge: challenge,
-    codeChallengeMethod: "S256",
-    prompt: "select_account",
-  });
-
-  return { authUrl, verifier };
-}
-
-async function exchangeCode(
-  app: msal.PublicClientApplication,
-  code: string,
-  verifier: string,
-): Promise<string> {
-  const result = await app.acquireTokenByCode({
-    code,
-    scopes: SCOPES,
-    redirectUri: REDIRECT_URI,
-    codeVerifier: verifier,
-  });
-  saveCache(app);
-  log.info(`Logged in as ${result.account?.name} (${result.account?.username})`);
-  return result.accessToken;
 }
 
 // --- Shared automated browser login ---
@@ -319,38 +288,6 @@ export async function getTokenSilent(): Promise<string | null> {
   }
 }
 
-export async function loginInteractive(): Promise<string> {
-  if (process.env.M365_NO_INTERACTIVE) {
-    throw new Error(
-      "Interactive login disabled (M365_NO_INTERACTIVE set) — refusing to open a browser",
-    );
-  }
-  const app = getApp();
-  const { authUrl, verifier } = await buildAuthUrl(app);
-
-  exec(`xdg-open ${JSON.stringify(authUrl)}`);
-  console.log("[auth] Browser opened for M365 login.");
-  console.log("[auth] After login, paste the redirect URL here:");
-
-  const readline = await import("node:readline");
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  const redirectUrl = await new Promise<string>((resolve) => {
-    rl.question("> ", (answer: string) => {
-      rl.close();
-      resolve(answer.trim());
-    });
-  });
-
-  const code = new URL(redirectUrl).searchParams.get("code");
-  if (!code) throw new Error("No auth code found in URL");
-
-  return exchangeCode(app, code, verifier);
-}
-
 export async function loginAutomated(
   email: string,
   password: string,
@@ -461,17 +398,13 @@ async function doGetToken(): Promise<string> {
   }
 
   const secrets = loadSecrets();
-  if (secrets) {
-    try {
-      return await loginAutomated(
-        secrets.email,
-        secrets.password,
-        secrets.mfaSecret,
-      );
-    } catch (err: any) {
-      log.error("Automated login failed:", err.message);
-    }
+  if (!secrets) {
+    throw new Error(
+      "No cached token and no secrets.json — cannot authenticate. Provide email/password/mfaSecret for automated login.",
+    );
   }
-
-  return loginInteractive();
+  // Automated (headless) login only. There is intentionally no interactive
+  // browser fallback — a headless host (systemd, CI, second PC) must fail loudly
+  // rather than hang on an invisible paste-the-URL prompt or pop a browser tab.
+  return loginAutomated(secrets.email, secrets.password, secrets.mfaSecret);
 }

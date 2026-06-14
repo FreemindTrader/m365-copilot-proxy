@@ -78,8 +78,9 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
 - Auth uses `~/.config/opencode-m365/secrets.json` (email/password/mfaSecret) +
   `msal-cache.json`. **This data dir keeps the legacy `opencode-m365` name** — do not
   rename it or you orphan working credentials.
-- Set `M365_DEBUG=1` to log to `~/.config/opencode-m365/debug.log`. Set
-  `M365_NO_INTERACTIVE=1` in automated runs so a login fallback can never open browser tabs.
+- Set `M365_DEBUG=1` to log to `~/.config/opencode-m365/debug.log`. There is **no
+  interactive login** — auth is silent-refresh → automated (secrets.json) → fail loudly.
+  A headless host / second PC never opens a browser tab or hangs on a paste-the-URL prompt.
 - **Mind the quota**: ~600 messages **per conversation**, plus account-level throttling.
   Don't burn it on loops. A "rate limited / empty response" is often actually a
   `Disengaged` refusal (see the API doc), not throttling.
@@ -97,10 +98,11 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   agent *backfired*. Don't try to wordsmith the model into acting — route its natural ```` ```bash ````.
 - **The agent is versioned by an instructions hash.** Its name is
   `m365-tool-agent-<sha256(instructions)[:8]>`, so editing `getAgentInstructions()` auto-
-  provisions a fresh agent on the next request and a cleanup pass retires the old one
-  (`M365_AGENT_NO_CLEANUP` to skip). `updateBotInstructions()` is still dead code — we
-  re-create rather than update in place. Multi-host footgun: a host on new code deletes the
-  old agent that hosts on old code may still be using mid-conversation. See API doc §10.
+  provisions a fresh agent on the next request. Stale versions are **always left in place**
+  (we never delete agents), which avoids the multi-host footgun where a host on new code
+  would delete the agent another host/PC is still using mid-conversation. A few orphaned
+  lightweight bots are harmless. `updateBotInstructions()` is still dead code — we re-create
+  rather than update in place. See API doc §10.
 - **Reasoning tones don't work with the agent.** `gpt-5.x` / `*-think-deeper` route through
   the `DeepLeo` reasoning pipeline, which meta-analyzes the injected prompt instead of
   obeying it. Only the default `magic` and `*-quick` tones behave. The model can't be bound
