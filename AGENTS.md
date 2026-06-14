@@ -86,8 +86,15 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
 
 ## Gotchas to know before you "fix" something
 
-- **Tool calling only works via a Copilot Studio agent.** The per-request JSON format
-  (bare vs ```` ```json ````) barely matters; the agent's server-side prompt is the lever.
+- **Tool calling needs the Copilot Studio agent AND the fenced/shell format.** The agent
+  alone isn't enough — the old JSON `{"tool":...}` format scored 0/5 on real agentic tasks
+  and was **removed**. Tools are now emitted as Markdown fences, and the load-bearing lever
+  is **shell-routing**: M365's chat model won't act-as-agent but will write a ```` ```bash ````
+  block, which the proxy routes to the harness's shell tool. That + the per-request shell
+  framing (`formatFencedToolDefinitions`) is what produces real loops. See docs/hypotheses.md §9.
+- **Prompt *framing* can't flip the turn-1 reflex; format/routing can.** 8 per-request
+  behavioral-prompt variants moved nothing (0 tool calls); heavy anti-advise framing in the
+  agent *backfired*. Don't try to wordsmith the model into acting — route its natural ```` ```bash ````.
 - **The agent is versioned by an instructions hash.** Its name is
   `m365-tool-agent-<sha256(instructions)[:8]>`, so editing `getAgentInstructions()` auto-
   provisions a fresh agent on the next request and a cleanup pass retires the old one
@@ -101,6 +108,14 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
 - **M365 disengages on large tool payloads.** Keep injected toolsets lean. This is why
   pi works and heavy harnesses (opencode) don't. The proxy also enforces one tool call per
   turn and strips M365's invented `{confidence}`/`{final}` JSON (`M365_ALLOW_MULTI_TOOL` to opt out).
+- **Account degradation is THREAD-rate, not message-count** (docs/hypotheses.md §9 F13).
+  Microsoft throttles *conversations started*, not messages sent — the per-conversation
+  counter resets each thread. A bench that opens one fresh conversation per task burns the
+  thread budget fast; a real pi session (one long thread, many messages) is fine. When
+  everything starts empty-503-ing, it's thread-throttle, **not** the Disengaged content
+  filter (check: no `messageType:"Disengaged"` → it's throttle). **A fresh login (move
+  `msal-cache.json` aside, restart → new tokens) clears it.** Space experiment runs; don't
+  loop new conversations.
 - The `nativeclient` OAuth redirect bounces to `/common/wrongplace`; the auth code is
   scraped from the navigation request, not a settled URL.
 

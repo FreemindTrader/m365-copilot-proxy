@@ -13,13 +13,23 @@ M365 Copilot uses a SignalR WebSocket protocol, not the OpenAI API. This project
 
 ### Tool calling
 
-M365 Copilot doesn't support OpenAI-style `tool_calls` natively. Instead:
+M365 Copilot doesn't support OpenAI-style `tool_calls` natively. Instead, tools are
+emulated via a **Markdown-fence format** (the JSON `{"tool":...}` format was removed —
+it scored 0/5 on real agentic tasks; see [hypotheses §9](docs/hypotheses.md)):
 
-- Tool definitions are injected into the prompt as a compact text list
-- The model emits a JSON tool call — `{"tool": "bash", "arguments": {"command": "ls"}}` — either bare or inside a ```` ```json ```` fence (the parser strips the fence)
+- Tool definitions are injected into the prompt as fenced templates inside a `<tools>` block
+- The model emits a fenced tool call — a code block whose info-string is the tool name
+  (scalar args as `key: value` header lines, one free-form body arg as the fence body,
+  `old`/`new` edits as aider-style `SEARCH/REPLACE` diffs)
 - The proxy/handler parses that and converts it to OpenAI `tool_calls` format
-- A `reply` tool lets the model produce text responses in the same channel, which gets converted back to plain text
-- **Reliability comes from the Copilot Studio agent (below), not the JSON syntax** — without the agent, M365 ignores tool instructions and answers in prose
+- **Shell-routing (the key lever):** M365's chat-tuned model won't "act as an agent" on
+  demand but *will* reflexively write a ```` ```bash ```` block. When the toolset includes a
+  shell tool (`bash`/`shell`/`run`/`run_command`/… — any name), the proxy injects "do the
+  whole step by writing one ```` ```bash ```` block" framing and routes that block to the
+  shell tool. This exploits the one agentic behavior Microsoft's system prompt permits, and
+  is what turns 0/5 into real multi-turn loops (verified 9-tool-call bug fix).
+- **Reliability comes from the Copilot Studio agent (below) + the fenced/shell framing** —
+  without the agent, M365 ignores tool instructions and answers in prose
 
 ### Agent mode
 
@@ -215,7 +225,9 @@ Three token scopes are acquired:
 | `M365_AGENT_NO_CLEANUP` | Skip deleting stale `m365-tool-agent-*` versions (use during staggered multi-host rollouts) |
 | `M365_ALLOW_MULTI_TOOL` | Allow the model to emit multiple tool calls per turn (default: only the first is kept) |
 | `M365_INJECT_REPLY_TOOL` | Set to `1` to inject a synthetic `reply(text)` tool. Forces every turn to be a tool call, including pure-prose answers. Cleaner contract for the model, +1 tool to the prompt (watch the Disengaged threshold). Confirmed 5/5 compliance on June 9 2026 ([hypotheses §1.1](docs/hypotheses.md)). |
-| `M365_KEEP_FEWSHOT` | Set to `1` to restore the few-shot example we used to inject into the per-request prompt. **Disabled by default** since `scripts/tool-compliance-experiment.mjs` measured it as dead weight (5/5 compliance without it, 10% faster). |
+| `M365_NO_CONFAB_RETRY` / `M365_CONFAB_RETRIES` | M365's chat model sometimes confabulates an inability to act ("I can't access the files, please paste them") on turn 1 without calling a tool, even though the environment is real. By default the proxy detects this and re-prompts forcefully **in the same conversation** once (`M365_CONFAB_RETRIES`, default `1`) to salvage the turn. Set `M365_NO_CONFAB_RETRY=1` to disable. |
+| `M365_NO_AUTO_REAUTH` | Set to `1` to disable automatic throttle-recovery. By default, when empty/throttled responses span several **distinct conversations** in a short window (the thread-rate-throttle signature, [F13](docs/hypotheses.md)), the proxy fires a **background fresh login** to clear it (new tokens). Single-flight + cooldown-guarded so it never storms logins; never blocks the request. |
+| `M365_REAUTH_EMPTY_THRESHOLD` / `M365_REAUTH_WINDOW_MS` / `M365_REAUTH_COOLDOWN_MS` | Tune auto-reauth: distinct-conversation empties to trigger (default `3`), the window they must fall in (default `120000`), and the minimum gap between re-logins (default `300000`). |
 | `M365_CACHE_FILE` | Override MSAL token cache location |
 | `M365_SECRETS_FILE` | Override credentials file location |
 | `CHROMIUM_PATH` | Path to Chromium binary for automated login |

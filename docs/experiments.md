@@ -37,17 +37,34 @@ gets a non-zero `SOLVED` / tool-call rate. **Always diff against the magic basel
   the two failure modes are independent.
 - **Cost:** ~25–50 msgs.
 
-### E-C1 — Fenced format vs JSON  ⭐ (needs code first)
-- **Hypothesis (H4):** the model emits ` ```bash `/` ```edit ` blocks far more
-  readily than `{"tool":...}` JSON (training-grain + no escaping). Higher SOLVED,
-  fewer GAVE_UP_PROSE.
-- **Build:** add `M365_TOOL_FORMAT=fenced` — extend `parseToolCalls` (tools.ts) for
-  fence-lang→tool + SEARCH/REPLACE edits, and a fenced variant of
-  `getAgentInstructions` (agent.ts). Editing instructions → new agent hash → fresh
-  agent auto-provisioned.
-- **Run:** baseline `--label json`; restart proxy with the flag → `--label fenced`.
-- **Read:** SOLVED(fenced) − SOLVED(json). >0 confirms; design note in api doc §5.
-- **Cost:** ~25 msgs/arm.
+### E-C1 — Fenced format vs JSON  ✅ RESOLVED (JSON deleted)
+- **Hypothesis (H4):** the model emits ` ```bash `/` ```edit ` blocks far more readily
+  than `{"tool":...}` JSON. **Confirmed and then some** — fenced is now the *only* format;
+  the JSON format was removed (it scored 0/5 on real agentic tasks). See E-C1b for the win.
+- Format per tool: fence info-string = tool name, scalar args as `key: value` header lines,
+  one free-form body arg as the fence body, an `old`/`new` pair as an aider-style
+  `SEARCH/REPLACE` diff. Code: `packages/core/src/fenced.ts`, wired via `tools.ts`/`agent.ts`.
+- **Known weakness:** a `write_file` body that itself contains a ` ``` ` fence can't be
+  carried unambiguously — but in practice the model routes file writes through ```` ```bash ````
+  heredocs (shell-routing), which sidesteps it.
+
+### E-C1b — Shell-routing ⭐ THE WIN (June 14, hypotheses F12)
+- **Result:** fenced format + the proxy's shell-first framing turns 0/5 into real
+  multi-turn agent loops (verified 9-tool-call `fix-bug` solve on a NEUTRAL harness
+  prompt). The model won't "be an agent" but will write ```bash; the proxy routes
+  that block to the harness's shell tool (any name) and executes it. **Shipped as the
+  default** (no env flag — fenced + shell-routing is the only path).
+- **Run (winning config):**
+  ```sh
+  pnpm build && pnpm run proxy 4141   # fenced + shell framing are the default
+  node scripts/bench/run.mjs --model m365-copilot --label tier1-neutral --tasks fix-bug,count-lines
+  ```
+- **New bench knobs (this session):** `--system <file>` / `BENCH_SEED=ls|cat`; prompt
+  hypotheses live in `scripts/bench/prompts/p*.txt` (p0 neutral … p8/p9 bash-elicitation).
+- **Read:** any multi-turn ```bash loop ending in a verifier pass. **Cost:** ~10 msgs
+  but **2 threads** — mind F13 thread-throttle; keep runs small and spaced.
+- **Caveat:** fakeable create-tasks (count-lines, fizzbuzz) still hallucinate; unfakeable
+  ones (fix-bug, find-needle, edit-config) solve. See hypotheses §9 "Remaining gap".
 
 ### E-C2 — Task-type sensitivity
 - **Hypothesis:** fakeable tasks (fizzbuzz, count-lines) hallucinate success;
