@@ -40,7 +40,7 @@ Change **one** variable, give it a `--label`, diff the JSON in `scripts/bench/ou
 | Lever | How to vary |
 |---|---|
 | **model / tone** | `--model m365-copilot` vs `--model gpt-5.5` vs `--model claude-sonnet` |
-| **tool format** | restart the proxy with `M365_TOOL_FORMAT=fenced` (once implemented) vs default JSON |
+| **tool format** | fenced is the only format now (JSON removed). Vary the per-request framing via `--system <file>` (see `prompts/p*.txt`) instead |
 | **prompt / agent instructions** | edit `getAgentInstructions()`, rebuild, re-run |
 | **optionsSets** | `M365_NO_CODE_INTERPRETER=1` etc. on the proxy |
 

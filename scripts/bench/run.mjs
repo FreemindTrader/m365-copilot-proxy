@@ -48,8 +48,14 @@ const TS = new Date().toISOString().replace(/[:.]/g, "-");
 const OUT = join(process.cwd(), "scripts", "bench", "out");
 mkdirSync(OUT, { recursive: true });
 
-// Neutral harness system prompt — constant across configs so it's not a variable.
-const SYSTEM = "You are an autonomous coding agent working in a real shell. Use the provided tools to actually do the task against the live filesystem. Do not ask questions. When the task is fully complete, reply with a one-line confirmation.";
+// Per-request harness system prompt. Default is the neutral baseline; override via
+// BENCH_SYSTEM (or --system <file>) to sweep prompt-framing hypotheses without an
+// agent rebuild. Keep it constant within a run; vary it across labeled runs.
+const DEFAULT_SYSTEM = "You are an autonomous coding agent working in a real shell. Use the provided tools to actually do the task against the live filesystem. Do not ask questions. When the task is fully complete, reply with a one-line confirmation.";
+const SYSTEM_FILE = opt("--system", "");
+const SEED = process.env.BENCH_SEED ?? ""; // "", "ls", or "cat" — context-seed level
+const SYSTEM = SYSTEM_FILE ? readFileSync(SYSTEM_FILE, "utf8").trim()
+  : (process.env.BENCH_SYSTEM ?? DEFAULT_SYSTEM);
 
 // --- OpenAI tools the agent is given ---
 const ALL_TOOLS = [
@@ -112,6 +118,25 @@ async function runTask(task) {
     { role: "system", content: SYSTEM },
     { role: "user", content: `${task.prompt}\n\n<!-- bench-run:${runId} -->` }, // nonce → fresh proxy conversation
   ];
+
+  // Optional context-seed (BENCH_SEED=ls|cat): inject a REAL prior tool round so
+  // the model arrives mid-loop on a provably-present filesystem. Tests whether the
+  // model will CONTINUE a tool loop even though it won't START one (the turn-1
+  // confabulation "the directory is empty / commands return nothing"). `ls` seeds
+  // just the directory tree; `cat` also seeds every file's contents.
+  if (SEED === "ls" || SEED === "cat") {
+    const cmd = SEED === "cat"
+      ? "ls -laR; echo '--- FILE CONTENTS ---'; for f in $(find . -type f); do echo \"### $f\"; cat \"$f\"; done"
+      : "ls -laR";
+    const seedOut = execTool("bash", { command: cmd }, sandbox, cid);
+    const callId = `seed_${runId}`;
+    messages.push({
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: callId, type: "function", function: { name: "bash", arguments: JSON.stringify({ command: cmd }) } }],
+    });
+    messages.push({ role: "tool", tool_call_id: callId, content: seedOut });
+  }
   let toolTurns = 0, proseTurns = 0, msgs = 0, finalAnswer = null, endReason = "maxturns", error = null;
   const t0 = Date.now();
 
@@ -165,5 +190,5 @@ const totalMsgs = rows.reduce((s, r) => s + r.msgs, 0);
 console.log(`\n[bench] === SCORECARD: ${LABEL} ===`);
 console.log(`[bench] SOLVED ${solved}/${rows.length} (${pct}%)  |  outcomes: ${Object.entries(byOutcome).map(([k,v])=>`${k}=${v}`).join(" ")}`);
 console.log(`[bench] avg tool-calls/task: ${avgTools}  |  M365 messages spent: ${totalMsgs}`);
-writeFileSync(join(OUT, `${LABEL}-${TS}.json`), JSON.stringify({ label: LABEL, model: MODEL, base: BASE, ts: TS, pct, solved, total: rows.length, byOutcome, avgTools, totalMsgs, rows }, null, 2));
+writeFileSync(join(OUT, `${LABEL}-${TS}.json`), JSON.stringify({ label: LABEL, model: MODEL, base: BASE, ts: TS, pct, solved, total: rows.length, byOutcome, avgTools, totalMsgs, system: SYSTEM, rows }, null, 2));
 console.log(`[bench] → scripts/bench/out/${LABEL}-${TS}.json`);
