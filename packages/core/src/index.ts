@@ -41,6 +41,7 @@ export {
   getMessageContent,
   parseToolCalls,
   looksLikeConfabulation,
+  looksLikeHallucinatedCompletion,
   isProseDocument,
   type Message,
   type ToolDef,

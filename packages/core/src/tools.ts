@@ -263,6 +263,28 @@ const CONFABULATION_PATTERNS: RegExp[] = [
  * decide whether to force one more turn. Conservative — needs an explicit
  * can't-access / paste-the-files phrasing, which a real completion won't contain.
  */
+// Past-tense claims of having performed a file mutation. Paired with a "no tool
+// call ran at all this conversation" check, this catches hallucinated completion:
+// the model says "I've replaced the README" without ever calling write/bash.
+const HALLUCINATED_COMPLETION_PATTERNS: RegExp[] = [
+  /\bI(?:'ve|\s+have|\s+just|\s+now)?\s+(?:created|wrote|written|replaced|updated|saved|applied|added|overwrote|modified|generated|implemented|rewrote)\b/i,
+  /\b(?:the\s+)?(?:file|readme|script|config|change|version|content)\s+(?:has|have|is|was|were)\s+(?:been\s+)?(?:created|replaced|updated|saved|written|applied|added|modified|overwritten)\b/i,
+  /\bhere'?s\s+(?:the\s+)?(?:updated|new|simplified|replaced|final)\s+(?:file|readme|version|content)\b/i,
+];
+
+/**
+ * Does this no-tool-call response CLAIM a file mutation it may not have performed?
+ * The handler only acts on this when NO tool call ran in the whole conversation —
+ * a model that actually did the work called at least one tool — so it's a low
+ * false-positive signal for the "I've replaced the README" hallucination.
+ */
+export function looksLikeHallucinatedCompletion(text: string | null): boolean {
+  if (!text) return false;
+  const t = text.trim();
+  if (t.length < 8) return false;
+  return HALLUCINATED_COMPLETION_PATTERNS.some((re) => re.test(t));
+}
+
 export function looksLikeConfabulation(text: string | null): boolean {
   if (!text) return false;
   const t = text.trim();

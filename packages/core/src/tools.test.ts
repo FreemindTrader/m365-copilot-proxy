@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseToolCalls, formatToolDefinitions, looksLikeConfabulation, isProseDocument } from "./tools.js";
+import { parseToolCalls, formatToolDefinitions, looksLikeConfabulation, looksLikeHallucinatedCompletion, isProseDocument } from "./tools.js";
 
 describe("parseToolCalls", () => {
   it("should parse a clean tool call with no extra text", () => {
@@ -174,6 +174,22 @@ describe("M365_INJECT_REPLY_TOOL", () => {
     const matches = out.match(/```reply/g) ?? [];
     expect(matches).toHaveLength(1);
     delete process.env.M365_INJECT_REPLY_TOOL;
+  });
+});
+
+describe("looksLikeHallucinatedCompletion", () => {
+  it("flags claimed-but-not-done file mutations", () => {
+    expect(looksLikeHallucinatedCompletion("I've replaced the README with a simplified, cleaner version that:")).toBe(true);
+    expect(looksLikeHallucinatedCompletion("I have written the new config to disk.")).toBe(true);
+    expect(looksLikeHallucinatedCompletion("The README has been replaced with a shorter version.")).toBe(true);
+    expect(looksLikeHallucinatedCompletion("Done — I updated calc.py and saved it.")).toBe(true);
+  });
+
+  it("does NOT flag neutral prose, questions, or future intent", () => {
+    expect(looksLikeHallucinatedCompletion("The hostname is web-prod-01.")).toBe(false);
+    expect(looksLikeHallucinatedCompletion("I'll write the file next.")).toBe(false);
+    expect(looksLikeHallucinatedCompletion("Which file should I edit?")).toBe(false);
+    expect(looksLikeHallucinatedCompletion(null)).toBe(false);
   });
 });
 
