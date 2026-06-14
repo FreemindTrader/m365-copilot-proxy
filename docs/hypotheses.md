@@ -196,6 +196,20 @@ Two deterministic fixes for failures seen in the live pi README run (F15's sessi
    or "nothing to simplify" — the exact give-up that ended the README run without a retry.
    Widened the patterns (unit-tested against the live strings).
 
+3. **Hallucinated completion** (`looksLikeHallucinatedCompletion`): the model claimed "I've
+   replaced the README" with **zero tool calls** — confirmed by README.md being untouched on
+   disk. Detect past-tense file-write claims, gated on the model having made NO tool call in
+   the whole conversation (a model that did real work called at least one tool → near-zero
+   false positives), and force a real write via the same retry loop. Unit-tested.
+
+**Live status (honest):** the document guard is **confirmed working live** (the model's
+README answer was returned as text, not executed). The other fixes are deterministic +
+unit-tested but **not yet validated live** — the account was too fatigued (request timeouts)
+to get clean signal. The remaining model-behaviour problem (emitting a pile of fences +
+"coaching" prose and spiralling) points at the shell-first framing being too aggressive; that
+softening is the next step and **must be A/B'd on a rested account** (bench: keep the coding
+win? pi: stop the spiral?), not shipped blind.
+
 **Still open (needs a rested-account A/B, not a guess):** the shell-first framing is
 aggressive enough that it ran `pnpm test`/`build` for a doc task. Softening it ("only run
 what the task needs; inspect, then make the minimal change") might reduce over-eagerness —
