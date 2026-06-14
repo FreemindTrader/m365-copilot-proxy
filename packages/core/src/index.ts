@@ -5,7 +5,15 @@ export {
   loginInteractive,
   loginAutomated,
   loadSecrets,
+  forceReauth,
 } from "./auth.js";
+
+export {
+  noteRequestOutcome,
+  createReauthTracker,
+  type ReauthTracker,
+  type ReauthTrackerOptions,
+} from "./auth-recovery.js";
 
 export { getOrCreateAgent } from "./agent.js";
 
@@ -33,6 +41,7 @@ export {
   formatToolChoiceInstruction,
   getMessageContent,
   parseToolCalls,
+  looksLikeConfabulation,
   type Message,
   type ToolDef,
   type ToolFunction,

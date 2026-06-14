@@ -372,6 +372,40 @@ export async function loginAutomated(
   return token;
 }
 
+// Force a fresh login (new tokens), bypassing the silent cache. This is the
+// throttle-recovery lever from docs/hypotheses.md §9 F13: account degradation is
+// thread-rate, and fresh tokens clear it. Single-flight so concurrent triggers
+// share one login instead of racing several browsers against the account.
+let inflightReauth: Promise<boolean> | null = null;
+
+export function forceReauth(): Promise<boolean> {
+  return (inflightReauth ??= doForceReauth().finally(() => {
+    inflightReauth = null;
+  }));
+}
+
+async function doForceReauth(): Promise<boolean> {
+  const secrets = loadSecrets();
+  if (!secrets) {
+    log.error("forceReauth: no secrets file — cannot re-login");
+    return false;
+  }
+  try {
+    const app = getApp();
+    // Drop cached accounts so nothing can silently reuse the throttled token.
+    const accounts = await app.getTokenCache().getAllAccounts();
+    for (const acct of accounts) await app.getTokenCache().removeAccount(acct);
+    saveCache(app);
+    log.info("forceReauth: cleared cached accounts, doing fresh automated login");
+    await loginAutomated(secrets.email, secrets.password, secrets.mfaSecret);
+    log.info("forceReauth: fresh login succeeded");
+    return true;
+  } catch (err: any) {
+    log.error(`forceReauth failed: ${err.message}`);
+    return false;
+  }
+}
+
 export function loadSecrets(): {
   email: string;
   password: string;

@@ -1,6 +1,19 @@
 import { createLogger } from "./log.js";
+import {
+  buildSpecMap,
+  deriveFencedSpec,
+  formatFencedToolDefinitions,
+  parseFencedToolCalls,
+  renderFencedCall,
+} from "./fenced.js";
 
 const log = createLogger("tools");
+
+// Tool calls use the **fenced** Markdown format exclusively (see fenced.ts and
+// docs/hypotheses.md §9). The old `{"tool":...,"arguments":{}}` JSON format was
+// removed — it produced 0/5 on real agentic tasks; fenced + shell-routing produces
+// genuine multi-turn loops. We still *parse* a stray JSON tool call as a tolerance
+// fallback (M365 occasionally emits one), but we never instruct the model to use it.
 
 // --- Types (standalone, no zod dependency) ---
 
@@ -72,41 +85,7 @@ function cleanLooseText(text: string): string | null {
 // --- Formatting ---
 
 export function formatToolDefinitions(tools: ToolDef[]): string {
-  const defs = tools.map((t) => {
-    const f = t.function;
-    const schema: Record<string, unknown> = {
-      name: f.name,
-    };
-    if (f.description) schema.description = f.description;
-    if (f.parameters) schema.parameters = f.parameters;
-    return JSON.stringify(schema, null, 2);
-  }).join("\n\n");
-
-  return `You are the execution core of an automated agent, not a chat assistant. Your output is parsed by a program — a real runtime that executes your tool calls against a live system and returns the actual results to you in <tool_response> blocks.
-
-Performing the task with tools is your PRIMARY JOB. Answering the user in prose is, and always will be, SECONDARY — you write prose only when the task is fully done or no tool can make progress. Default to acting, not talking.
-
-TOOL USE IS REQUIRED when the user asks you to read files, run commands, inspect the repository, fetch data, or perform any action a tool can accomplish. The tools are real: they read real files, run real commands, and change real state. Never answer from memory or simulate a result when a tool can provide it.
-
-When calling a tool, output ONLY a single JSON tool call. No other text:
-{"tool": "<tool_name>", "arguments": { ... }}
-
-STRICT RULES:
-- Output ONLY the JSON object when calling a tool. No markdown, no code fences, no explanation, no surrounding text, and no JSON keys other than "tool" and "arguments" (never "confidence", "final", "thoughts", etc.).
-- Never describe your intent ("I'll read the file…", "Let me check…") and never emit filler or acknowledgements ("Good, that's fixable", "You're absolutely right", "This one:"). Each turn is exactly one tool call OR the final answer — nothing in between.
-- One tool call per response, then stop and wait for its <tool_response>. Never batch multiple calls in one response.
-- Tool names and argument keys must match exactly as defined below.
-- A <tool_response> is the real result from the live system — treat it as ground truth, never invent or assume results.
-- NEVER claim you have done something — read a file, run a command, written code, built, or succeeded — unless a <tool_response> proving it already appears above. Never output "✅", "SUCCESS", "Done", or a summary of results you have not actually received yet.
-- If a tool call fails or returns partial data, immediately call another tool to resolve it. Do not give up.
-- Do not defer work or promise future results ("I'll do this next…").
-- Do not ask the user questions unless tool execution is impossible.
-- Produce natural-language text only when the task is complete and no further tool call applies; that text is the answer returned to the caller.
-- When you do give that final answer, output only the answer itself — no preamble ("All right…", "Here's a summary…", "Let me…"), no sign-off, and no "let's close the loop."
-
-<tools>
-${defs}
-</tools>`;
+  return formatFencedToolDefinitions(tools);
 }
 
 export function formatToolChoiceInstruction(toolChoice: ToolChoice): string {
@@ -123,48 +102,6 @@ export function getMessageContent(msg: Message): string {
   if (msg.content === null || msg.content === undefined) return "";
   if (typeof msg.content === "string") return msg.content;
   return msg.content.map((p) => p.text || "").join("");
-}
-
-/**
- * A few-shot that demonstrates the sustained one-call-per-turn loop — act, wait
- * for the REAL result, act again using it, then a terse preamble-free answer.
- * Built from the CLIENT'S ACTUAL tools so the model never sees a phantom tool:
- * a hard-coded `read_file` (absent from pi's `read`/`bash`/`edit`/`write` set)
- * derailed reasoning models into critiquing the example instead of acting. Uses
- * concrete values, never `…`/`<placeholder>` (reasoning models echo those).
- */
-function fewShotExample(tools: ToolDef[]): string[] {
-  const find = (re: RegExp) => tools.find((t) => re.test(t.function.name));
-  const firstKey = (t: ToolDef, fallback: string) =>
-    t.function.parameters?.required?.[0] ??
-    Object.keys(t.function.parameters?.properties ?? {})[0] ??
-    fallback;
-
-  const act = find(/bash|shell|run|exec|command|terminal/i) ?? find(/write|edit|create/i);
-  const read = find(/read|cat|view|open|show|get|fetch|file/i);
-
-  if (act && read && act !== read) {
-    const ak = firstKey(act, "command");
-    const rk = firstKey(read, "path");
-    return [
-      `<user>\nAppend "build: ok" to /tmp/status and confirm it's there.\n</user>`,
-      `<assistant>\n{"tool": "${act.function.name}", "arguments": {"${ak}": "echo 'build: ok' >> /tmp/status"}}\n</assistant>`,
-      `<tool_response name="${act.function.name}" call_id="ex1">\n</tool_response>`,
-      `<assistant>\n{"tool": "${read.function.name}", "arguments": {"${rk}": "/tmp/status"}}\n</assistant>`,
-      `<tool_response name="${read.function.name}" call_id="ex2">\nbuild: ok\n</tool_response>`,
-      `<assistant>\nConfirmed — /tmp/status contains "build: ok".\n</assistant>`,
-    ];
-  }
-
-  // Single-tool fallback: one clean real call against a concrete input.
-  const t = read ?? act ?? tools[0];
-  const k = firstKey(t, "path");
-  return [
-    `<user>\nWhat's the hostname of this machine?\n</user>`,
-    `<assistant>\n{"tool": "${t.function.name}", "arguments": {"${k}": "/etc/hostname"}}\n</assistant>`,
-    `<tool_response name="${t.function.name}" call_id="ex1">\nweb-prod-01\n</tool_response>`,
-    `<assistant>\nThe hostname is web-prod-01.\n</assistant>`,
-  ];
 }
 
 /**
@@ -212,30 +149,35 @@ export function formatMessages(
   }
 
   const effectiveTools = tools ? maybeInjectReplyTool(tools) : tools;
+  const specMap = effectiveTools ? buildSpecMap(effectiveTools) : null;
   if (effectiveTools && effectiveTools.length > 0 && toolChoice !== "none") {
     parts.push(`<system>\n${formatToolDefinitions(effectiveTools)}${formatToolChoiceInstruction(toolChoice)}\n</system>`);
-
-    // Few-shot built from the client's real tools (see fewShotExample). No
-    // chit-chat example (taught prose answers), no batching (taught plan-dumps).
-    //
-    // Measured useless: the `no_fewshot` variant of
-    // `scripts/tool-compliance-experiment.mjs` (June 2026) hit 5/5 compliance
-    // AND was the fastest variant — the agent's server-side system prompt
-    // alone is doing the work, the few-shot just spends tokens for no win.
-    // Off by default; set `M365_KEEP_FEWSHOT=1` to restore if a future M365
-    // change makes it useful again.
-    if (process.env.M365_KEEP_FEWSHOT) {
-      parts.push(...fewShotExample(effectiveTools));
-    }
   }
 
   for (const m of messages) {
     if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
       const calls = m.tool_calls.map((tc) => {
-        const args = typeof tc.function.arguments === "string"
-          ? tc.function.arguments
-          : JSON.stringify(tc.function.arguments);
-        return `{"tool": "${tc.function.name}", "arguments": ${args}}`;
+        const rawArgs = tc.function.arguments;
+        let argsObj: Record<string, unknown> = {};
+        try {
+          argsObj = typeof rawArgs === "string" ? JSON.parse(rawArgs || "{}") : (rawArgs ?? {});
+        } catch {
+          // fall through with empty args; better than crashing the transcript
+        }
+        // Prefer the request's tool schema; otherwise synthesize one from the
+        // recorded argument keys so a tool no longer in scope still renders.
+        const spec = specMap?.get(tc.function.name) ?? deriveFencedSpec({
+          type: "function",
+          function: {
+            name: tc.function.name,
+            parameters: {
+              properties: Object.fromEntries(
+                Object.keys(argsObj).map((k) => [k, { type: "string" }]),
+              ),
+            },
+          },
+        });
+        return renderFencedCall(spec, argsObj);
       }).join("\n");
       const content = getMessageContent(m);
       parts.push(`<assistant>${content ? "\n" + content : ""}\n${calls}\n</assistant>`);
@@ -265,10 +207,47 @@ export interface ParseResult {
   textContent: string | null;
 }
 
-export function parseToolCalls(text: string): ParseResult {
+// Patterns of M365's stochastic turn-1 "give-up" confabulation: it claims it can't
+// see/run anything and asks the user to paste files, WITHOUT ever calling a tool —
+// even though the environment is real. Used to trigger a forcing retry (handler).
+const CONFABULATION_PATTERNS: RegExp[] = [
+  /return(?:ing|s|ed)?\s+no\s+(?:output|results?|content)/i,
+  /(?:unable|not able|can.?t|cannot)\s+to?\s*(?:access|inspect|list|read|run|locate|see|open)/i,
+  /don.?t\s+have\s+access/i,
+  /no\s+access\s+to/i,
+  /paste\s+(?:the\s+)?(?:contents?|files?|code|them)/i,
+  /provide\s+(?:the\s+)?(?:contents?|files?)/i,
+  /(?:environment|shell|tool)\s+(?:isn.?t|is not|aren.?t|are not|appears? to be)\s+(?:return|provid|respond|work|access)/i,
+  /no\s+files?\s+(?:in|found|present|visible)/i,
+];
+
+/**
+ * Heuristic: does this no-tool-call response look like M365 confabulating an
+ * inability to act (rather than a genuine final answer)? The handler uses this to
+ * decide whether to force one more turn. Conservative — needs an explicit
+ * can't-access / paste-the-files phrasing, which a real completion won't contain.
+ */
+export function looksLikeConfabulation(text: string | null): boolean {
+  if (!text) return false;
+  const t = text.trim();
+  if (t.length < 12) return false;
+  return CONFABULATION_PATTERNS.some((re) => re.test(t));
+}
+
+export function parseToolCalls(text: string, tools?: ToolDef[]): ParseResult {
+  // Fenced is the format: parse ```toolname blocks first. Needs the tool schemas
+  // to map header/body args. The JSON parse below is only a tolerance fallback for
+  // when M365 ignores the contract and emits a `{"tool":...}` object anyway.
+  if (tools && tools.length > 0) {
+    const { calls, leftover } = parseFencedToolCalls(text, buildSpecMap(tools));
+    if (calls.length > 0) {
+      return { hasToolCalls: true, toolCalls: calls, textContent: cleanLooseText(leftover) };
+    }
+  }
+
   const toolCalls: ParsedToolCall[] = [];
 
-  // Try JSON format first: {"tool": "...", "arguments": {...}}
+  // Tolerance fallback: a stray JSON tool call {"tool": "...", "arguments": {...}}
   const jsonRegex = new RegExp(TOOL_CALL_REGEX.source, "g");
   let match: RegExpExecArray | null;
 

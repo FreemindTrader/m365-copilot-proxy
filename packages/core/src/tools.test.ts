@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseToolCalls, formatToolDefinitions } from "./tools.js";
+import { parseToolCalls, formatToolDefinitions, looksLikeConfabulation } from "./tools.js";
 
 describe("parseToolCalls", () => {
   it("should parse a clean tool call with no extra text", () => {
@@ -145,16 +145,16 @@ describe("M365_INJECT_REPLY_TOOL", () => {
     delete process.env.M365_INJECT_REPLY_TOOL;
     const fmt = await importFormat();
     const out = fmt(userMsg, sampleTools);
-    expect(out).not.toContain('"name": "reply"');
+    expect(out).not.toContain("```reply");
   });
 
   it("injects a reply tool when M365_INJECT_REPLY_TOOL is set", async () => {
     process.env.M365_INJECT_REPLY_TOOL = "1";
     const fmt = await importFormat();
     const out = fmt(userMsg, sampleTools);
-    expect(out).toContain('"name": "reply"');
-    // It must also still include the caller's tools
-    expect(out).toContain('"name": "bash"');
+    expect(out).toContain("```reply");
+    // It must also still include the caller's tools (fenced template)
+    expect(out).toContain("```bash");
     delete process.env.M365_INJECT_REPLY_TOOL;
   });
 
@@ -170,10 +170,83 @@ describe("M365_INJECT_REPLY_TOOL", () => {
       },
     };
     const out = fmt(userMsg, [callerReply, ...sampleTools]);
-    // Exactly one definition with name: "reply"
-    const matches = out.match(/"name": "reply"/g) ?? [];
+    // Exactly one fenced template for the reply tool
+    const matches = out.match(/```reply/g) ?? [];
     expect(matches).toHaveLength(1);
     delete process.env.M365_INJECT_REPLY_TOOL;
+  });
+});
+
+describe("looksLikeConfabulation", () => {
+  it("flags real M365 give-up confabulations", () => {
+    expect(looksLikeConfabulation("I'm unable to access or list any files in the working directory (all shell commands are returning no output).")).toBe(true);
+    expect(looksLikeConfabulation("I don't have access to your project files or the ability to run python3 check.py here.")).toBe(true);
+    expect(looksLikeConfabulation("To move forward, please paste the contents of calc.py and check.py.")).toBe(true);
+    expect(looksLikeConfabulation("It looks like the execution environment isn't returning any output to the commands.")).toBe(true);
+  });
+
+  it("does NOT flag genuine final answers or normal prose", () => {
+    expect(looksLikeConfabulation("Fixed the bug: add now returns a + b, and check.py prints OK.")).toBe(false);
+    expect(looksLikeConfabulation("The hostname is web-prod-01.")).toBe(false);
+    expect(looksLikeConfabulation("Done.")).toBe(false);
+    expect(looksLikeConfabulation(null)).toBe(false);
+    expect(looksLikeConfabulation("")).toBe(false);
+  });
+});
+
+describe("fenced tool format (the only format)", () => {
+  const tools = [
+    {
+      type: "function" as const,
+      function: {
+        name: "bash",
+        description: "Run a shell command",
+        parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+      },
+    },
+    {
+      type: "function" as const,
+      function: {
+        name: "write_file",
+        description: "Write a file",
+        parameters: {
+          type: "object",
+          properties: { path: { type: "string" }, content: { type: "string" } },
+          required: ["path", "content"],
+        },
+      },
+    },
+  ];
+
+  it("parses a fenced tool call when tools are passed", () => {
+    const result = parseToolCalls("```bash\nls -la\n```", tools);
+    expect(result.hasToolCalls).toBe(true);
+    expect(result.toolCalls[0].function.name).toBe("bash");
+    expect(JSON.parse(result.toolCalls[0].function.arguments)).toEqual({ command: "ls -la" });
+    expect(result.textContent).toBeNull();
+  });
+
+  it("tolerates a stray JSON tool call (fallback for when M365 ignores the contract)", () => {
+    const result = parseToolCalls('{"tool": "bash", "arguments": {"command": "ls"}}', tools);
+    expect(result.hasToolCalls).toBe(true);
+    expect(result.toolCalls[0].function.name).toBe("bash");
+  });
+
+  it("emits a fenced <tools> block and renders history as fenced calls", async () => {
+    const mod = await import("./tools.js");
+    const out = mod.formatMessages(
+      [
+        { role: "user", content: "make a file" },
+        {
+          role: "assistant",
+          tool_calls: [{ id: "c1", function: { name: "write_file", arguments: '{"path":"a.py","content":"print(1)"}' } }],
+        },
+      ],
+      tools,
+    );
+    expect(out).toContain("```write_file");
+    expect(out).toContain("path: a.py");
+    expect(out).not.toContain('{"tool":');
   });
 });
 
@@ -193,30 +266,20 @@ describe("formatToolDefinitions", () => {
     },
   ];
 
-  it("should include strict tool-calling rules", () => {
+  it("emits the fenced contract (delegates to formatFencedToolDefinitions)", () => {
     const output = formatToolDefinitions(tools);
 
     expect(output).toContain("TOOL USE IS REQUIRED");
-    expect(output).toContain("ONLY a single JSON tool call");
-    expect(output).toContain("Never describe your intent");
-    expect(output).toContain("Do not ask the user questions unless tool execution is impossible");
-    expect(output).toContain("Do not defer work");
-  });
-
-  it("should make tools primary and forbid hallucinated success / invented keys", () => {
-    const output = formatToolDefinitions(tools);
-
     expect(output).toContain("PRIMARY JOB");
     expect(output).toContain("SECONDARY");
-    expect(output).toContain('no JSON keys other than "tool" and "arguments"');
-    expect(output).toContain("SUCCESS");
-    expect(output).toContain("no preamble");
+    expect(output).toContain("ACTION"); // a fence is an executed action, not an illustration
   });
 
-  it("should include tool definitions", () => {
+  it("lists each tool as a fenced template inside <tools>", () => {
     const output = formatToolDefinitions(tools);
 
-    expect(output).toContain('"name": "read_file"');
+    expect(output).toContain("read_file"); // the tool name heads its template
+    expect(output).toContain("```read_file");
     expect(output).toContain("<tools>");
     expect(output).toContain("</tools>");
   });

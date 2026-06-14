@@ -5,12 +5,19 @@ import {
   trunc,
   formatMessages,
   parseToolCalls,
+  looksLikeConfabulation,
   getMessageContent,
+  noteRequestOutcome,
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import type { z } from "zod/v4";
 
 const log = createLogger("handler");
+
+// Forcing follow-up sent (in the same conversation) when M365 confabulates an
+// inability to act instead of calling a tool. See the confab-retry loop below.
+const CONFAB_FORCE_PROMPT =
+  "The working directory and the files named in the task ARE present on a real filesystem right now. Do NOT ask me to paste anything, and do NOT say commands return no output — you have not run any command yet. Emit ONE ```bash block this turn: run `ls -la` and `cat` the relevant files. Output only the ```bash block, nothing else.";
 
 // M365 soft-caps output around ~3k tokens (~12k chars) and — critically —
 // CONCLUDES EARLY rather than truncating mid-stream, so a too-long answer comes
@@ -225,6 +232,7 @@ export async function handleChatCompletion(
       lastTurnCount = copilotStream.turnCount;
 
       if (copilotStream.hasContent || fullText.length > 0) {
+        noteRequestOutcome(false, convId); // clean response → degradation has lifted
         return { fullText };
       }
 
@@ -275,9 +283,15 @@ export async function handleChatCompletion(
         await new Promise(r => setTimeout(r, SHORT_RETRY_DELAY_MS));
         text = "Please continue."; // M365 already has context
       } else {
+        // Final empty after retries, and not an at-limit (per-conversation) cap:
+        // this is the thread-rate throttle signature (F13). Feed the auto-reauth
+        // policy — it fires a background re-login once empties span enough distinct
+        // conversations. Never blocks this request.
+        noteRequestOutcome(true, convId);
         return { error: emptyResponseResponse(t) };
       }
     }
+    noteRequestOutcome(true, convId);
     return { error: emptyResponseResponse(null) };
   }
 
@@ -289,8 +303,32 @@ export async function handleChatCompletion(
     const fullText = result.fullText;
 
     log.debug("Raw response (tool mode):", trunc(fullText, 1000));
-    let parsed = parseToolCalls(fullText);
+    let parsed = parseToolCalls(fullText, body.tools);
     log.info(`Parse result: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
+
+    // Salvage stochastic turn-1 confabulation: M365's chat model sometimes claims it
+    // "can't access the files / commands return no output" and asks the user to paste
+    // them, WITHOUT calling a tool — even though the environment is real (the bench +
+    // pi both reproduce this). Re-prompt forcefully in the SAME conversation (one
+    // thread, cheap). Disable with M365_NO_CONFAB_RETRY; tune count with M365_CONFAB_RETRIES.
+    const maxConfabRetries = process.env.M365_NO_CONFAB_RETRY
+      ? 0
+      : Number(process.env.M365_CONFAB_RETRIES ?? 1);
+    for (
+      let confabAttempt = 0;
+      confabAttempt < maxConfabRetries &&
+        !parsed.hasToolCalls &&
+        looksLikeConfabulation(parsed.textContent);
+      confabAttempt++
+    ) {
+      log.info(`Confabulation detected (no tool call + "can't access" prose) — forcing retry ${confabAttempt + 1}/${maxConfabRetries}`);
+      text = CONFAB_FORCE_PROMPT;
+      const retry = await runBuffered();
+      if ("error" in retry) return retry.error;
+      conv.sentMessageCount = body.messages.length;
+      parsed = parseToolCalls(retry.fullText, body.tools);
+      log.info(`After confab retry: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
+    }
 
     // Fail-closed: if model mixed text with tool calls, strip text and re-prompt once.
     // This enforces the "output ONLY a tool call" contract.

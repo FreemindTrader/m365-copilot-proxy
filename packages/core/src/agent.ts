@@ -36,21 +36,31 @@ function getAgentName(): string {
 const BOT_ICON_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAIAAADYYG7QAAAAB3RJTUUH6AMbAAAoLbOJEAAAABl0RVh0Q29tbWVudABDcmVhdGVkIHdpdGggR0lNUFeBDhcAAAAoSURBVFjD7cExAQAAAMKg9U9tDB+gAAAAAAAAAAAAAAAAAAAAAAAA/BgwMAAB/0LuMgAAAABJRU5ErkJggg==";
 
+/**
+ * The server-side agent prompt (baked into the Copilot Studio agent at creation;
+ * editing this string changes the instructions hash → a fresh agent auto-provisions).
+ * FORMAT-CONTRACT ONLY — it teaches the Markdown-fence tool protocol and stresses
+ * that a fence is an executed ACTION, not an illustration. Behavioural framing
+ * (shell-first, anti-confabulation) lives in the per-request <tools> block
+ * (`formatFencedToolDefinitions`), which is cheap to vary without re-provisioning.
+ * See docs/hypotheses.md §9.
+ */
 function getAgentInstructions(): string {
-  return `You are the execution core of an automated agent, not a chat assistant. Your output is parsed by a program; there is no human reading it directly.
+  // FORMAT-CONTRACT ONLY. Behavioral framing (anti-advise, anti-confabulation,
+  // first-move forcing, etc.) is deliberately NOT here — it's swept per-request as
+  // the harness system message so prompt hypotheses can be A/B'd without rebuilding
+  // (and thus re-provisioning) the agent each time. An earlier version that baked
+  // heavy anti-advise framing into the agent SUPPRESSED tool emission (0 calls),
+  // so this stays minimal and the behavioral lever lives where it's cheap to vary.
+  return `You are the execution core of an automated agent. Your output is parsed by a program.
 
-Performing the task with tools is your PRIMARY JOB. Answering the user in prose is, and always will be, SECONDARY — you produce prose only when the task is fully complete or no tool can make progress. Default to acting, not talking.
+When the incoming message contains a <tools> block, you are in execution mode. To act, output ONLY a single Markdown code fence whose info-string is the tool name — nothing before or after. A fenced block is an ACTION the runtime executes immediately against a live system; it is never an example or illustration:
+\`\`\`<tool_name>
+<one "key: value" header line per scalar argument>
 
-When the incoming message contains a <tools> block, you are in execution mode:
-- A real runtime parses your output, runs the named tool against a live system, and returns the actual result to you in a <tool_response> block. The calls are real: they read real files, run real commands, and change real state. Treat every <tool_response> as ground truth — never invent, assume, or simulate a result.
-- To act, output ONLY this and nothing else — no prose, no markdown, no code fences, and no JSON keys other than "tool" and "arguments" (never "confidence", "final", etc.):
-{"tool": "<tool_name>", "arguments": { ... }}
-- NEVER claim you have done something — read, run, written, built, or succeeded — unless a <tool_response> proving it already appears above. Never output "✅", "SUCCESS", "Done", or results you have not actually received.
-- NEVER emit filler, acknowledgements, or commentary ("Good, that's fixable", "You're absolutely right", "Let me check"). Each turn is exactly one tool call or the final answer — nothing in between.
-- Emit exactly one tool call per turn, then stop and wait for its <tool_response>. Do not batch calls. Tool names and argument keys must match the provided definitions exactly.
-- If a call fails or returns partial data, immediately emit the next tool call to recover. Do not stop, and do not ask questions — there is no human to answer.
-- Produce natural-language text only when the task is fully complete and no further tool call applies; that final text is the answer returned to the caller.
-- When you do give that final answer, output only the answer itself — no preamble ("All right…", "Here's a summary…", "Let me…"), no sign-off, and no "let's close the loop."
+<the body argument, if the tool defines one>
+\`\`\`
+The runtime returns the real result in a <tool_response> block — treat it as ground truth. Emit exactly one fenced tool call per turn, then stop and wait for the <tool_response>. The info-string and header keys must match the provided tool definitions exactly.
 
 When the message has no <tools> block, respond normally as a helpful assistant in natural language.`;
 }
