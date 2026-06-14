@@ -227,6 +227,9 @@ describe("looksLikeConfabulation", () => {
     expect(looksLikeConfabulation("I don't have access to your project files or the ability to run python3 check.py here.")).toBe(true);
     expect(looksLikeConfabulation("To move forward, please paste the contents of calc.py and check.py.")).toBe(true);
     expect(looksLikeConfabulation("It looks like the execution environment isn't returning any output to the commands.")).toBe(true);
+    // exact strings from the live pi README run that previously slipped through
+    expect(looksLikeConfabulation("The `README.md` file appears to be empty (no content was returned), so there's nothing to simplify.")).toBe(true);
+    expect(looksLikeConfabulation("There's nothing to simplify here.")).toBe(true);
   });
 
   it("does NOT flag genuine final answers or normal prose", () => {
@@ -235,6 +238,35 @@ describe("looksLikeConfabulation", () => {
     expect(looksLikeConfabulation("Done.")).toBe(false);
     expect(looksLikeConfabulation(null)).toBe(false);
     expect(looksLikeConfabulation("")).toBe(false);
+  });
+});
+
+describe("tool-result labelling", () => {
+  const tools = [
+    { type: "function" as const, function: { name: "bash", description: "run", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
+  ];
+
+  it("labels a tool result with the command that produced it (not 'unknown')", async () => {
+    const { formatMessages } = await import("./tools.js");
+    const out = formatMessages(
+      [
+        { role: "user", content: "list files" },
+        { role: "assistant", tool_calls: [{ id: "c1", function: { name: "bash", arguments: '{"command":"ls -la"}' } }] },
+        { role: "tool", tool_call_id: "c1", content: "README.md" },
+      ],
+      tools,
+    );
+    expect(out).toContain('<tool_response tool="bash" command="ls -la">');
+    expect(out).not.toContain('name="unknown"');
+  });
+
+  it("falls back to a generic tool label when the call can't be correlated", async () => {
+    const { formatMessages } = await import("./tools.js");
+    const out = formatMessages(
+      [{ role: "tool", tool_call_id: "orphan", content: "some output" }],
+      tools,
+    );
+    expect(out).toContain('<tool_response tool="tool">');
   });
 });
 

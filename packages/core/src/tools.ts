@@ -104,6 +104,22 @@ export function getMessageContent(msg: Message): string {
   return msg.content.map((p) => p.text || "").join("");
 }
 
+/** A short one-line description of what a tool call did, for labelling its result
+ *  (e.g. the shell command, or the file path). Newlines collapsed, truncated. */
+function toolCallSummary(rawArgs: string): string {
+  let args: Record<string, unknown> = {};
+  try {
+    args = typeof rawArgs === "string" ? JSON.parse(rawArgs || "{}") : (rawArgs ?? {});
+  } catch {
+    return "";
+  }
+  const primary =
+    args.command ?? args.cmd ?? args.script ?? args.path ?? args.file ??
+    args.filename ?? args.query ?? Object.values(args).find((v) => typeof v === "string");
+  if (typeof primary !== "string") return "";
+  return primary.replace(/\s+/g, " ").replace(/"/g, "'").trim().slice(0, 100);
+}
+
 /**
  * Inject a synthetic `reply(text)` tool that the model calls instead of
  * answering in prose. Wired by the handler (which converts `reply` back to a
@@ -154,6 +170,19 @@ export function formatMessages(
     parts.push(`<system>\n${formatToolDefinitions(effectiveTools)}${formatToolChoiceInstruction(toolChoice)}\n</system>`);
   }
 
+  // Correlate each tool result back to the call that produced it, so the model
+  // sees WHICH command's output it's reading (e.g. `bash: ls -la`). Without this
+  // the result is labelled "unknown" and the model misreads it — observed: it ran
+  // `ls`, saw `README.md`, and concluded the *file* was empty (docs §9 F15-adjacent).
+  const callMeta = new Map<string, { name: string; summary: string }>();
+  for (const m of messages) {
+    if (m.role === "assistant" && m.tool_calls) {
+      for (const tc of m.tool_calls) {
+        if (tc.id) callMeta.set(tc.id, { name: tc.function.name, summary: toolCallSummary(tc.function.arguments) });
+      }
+    }
+  }
+
   for (const m of messages) {
     if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
       const calls = m.tool_calls.map((tc) => {
@@ -182,9 +211,12 @@ export function formatMessages(
       const content = getMessageContent(m);
       parts.push(`<assistant>${content ? "\n" + content : ""}\n${calls}\n</assistant>`);
     } else if (m.role === "tool") {
-      const name = m.name || "unknown";
-      const callId = m.tool_call_id || "?";
-      parts.push(`<tool_response name="${name}" call_id="${callId}">\n${getMessageContent(m)}\n</tool_response>`);
+      const meta = m.tool_call_id ? callMeta.get(m.tool_call_id) : undefined;
+      const name = m.name || meta?.name || "tool";
+      // Show the command/args that produced this output so the model reads it in
+      // context (a directory listing vs file contents vs a command's stdout).
+      const cmdAttr = meta?.summary ? ` command="${meta.summary}"` : "";
+      parts.push(`<tool_response tool="${name}"${cmdAttr}>\n${getMessageContent(m)}\n</tool_response>`);
     } else {
       parts.push(`<${m.role}>\n${getMessageContent(m)}\n</${m.role}>`);
     }
@@ -212,6 +244,7 @@ export interface ParseResult {
 // even though the environment is real. Used to trigger a forcing retry (handler).
 const CONFABULATION_PATTERNS: RegExp[] = [
   /return(?:ing|s|ed)?\s+no\s+(?:output|results?|content)/i,
+  /no\s+(?:output|results?|content|data)\s+(?:was\s+|were\s+)?(?:return|provid|present)/i, // "no content was returned"
   /(?:unable|not able|can.?t|cannot)\s+to?\s*(?:access|inspect|list|read|run|locate|see|open)/i,
   /don.?t\s+have\s+access/i,
   /no\s+access\s+to/i,
@@ -219,6 +252,9 @@ const CONFABULATION_PATTERNS: RegExp[] = [
   /provide\s+(?:the\s+)?(?:contents?|files?)/i,
   /(?:environment|shell|tool)\s+(?:isn.?t|is not|aren.?t|are not|appears? to be)\s+(?:return|provid|respond|work|access)/i,
   /no\s+files?\s+(?:in|found|present|visible)/i,
+  /(?:file|directory|folder|it)\s+(?:appears?|seems?|looks?)\s+(?:to\s+be\s+)?empty/i, // "the file appears to be empty"
+  /nothing\s+to\s+(?:simplify|fix|do|change|show|read)/i,                               // "nothing to simplify"
+  /(?:tool|command|it)\s+returned\s+(?:no|empty|nothing)/i,
 ];
 
 /**

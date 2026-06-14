@@ -181,6 +181,26 @@ unit-tested, validated offline against the real README (6 fences → text).
 README task remains stochastically flaky for *other* reasons (turn-1 confab, a model
 misreading `ls` output as file content) — orthogonal to this fix.
 
+### F16 — Behavioural reliability fixes (from the live pi README run) 🟢
+
+Two deterministic fixes for failures seen in the live pi README run (F15's session):
+
+1. **Tool results were labelled `name="unknown"`** → the model misread a `ls` result
+   (`README.md`) as the *file's* (empty) contents and gave up. Fixed: correlate each tool
+   result to its call via `tool_call_id` and label it with the command that produced it —
+   `<tool_response tool="bash" command="ls -la">`. Now the model reads output in context
+   (listing vs file contents vs stdout). `formatMessages`/`toolCallSummary`, unit-tested.
+
+2. **The confab-retry missed "appears empty" phrasings.** `looksLikeConfabulation` matched
+   "returns no content" but not "no content *was returned*", "the file appears to be empty",
+   or "nothing to simplify" — the exact give-up that ended the README run without a retry.
+   Widened the patterns (unit-tested against the live strings).
+
+**Still open (needs a rested-account A/B, not a guess):** the shell-first framing is
+aggressive enough that it ran `pnpm test`/`build` for a doc task. Softening it ("only run
+what the task needs; inspect, then make the minimal change") might reduce over-eagerness —
+but could regress the coding win, so it must be measured on the bench + pi, not shipped blind.
+
 ### What did NOT work (negative results, all this session)
 - **8 per-request prompt variants** (alone / env-is-real / first-move-forcing / batch-persona
   / verify-contract / terse / combined): **0 tool calls each.** Wording cannot flip the turn-1
