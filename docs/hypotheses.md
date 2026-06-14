@@ -148,6 +148,39 @@ on reliability — 2/2 with the new framing is encouraging but small; run ~10× 
 the confab-retry fires AND salvages. If the retry rarely saves a confabulated turn, escalate:
 a 2nd retry, or inject the framing as the LAST pre-user instruction (recency).
 
+### F15 — Shell-routing executes a model's OWN document if it contains code fences 🟢
+
+**Claim.** The shell-routing parser turns *every* ```bash block into a tool call, so when
+the model **answers** with a markdown document full of code fences — e.g. "here's a
+simplified README" for a repo whose README is about ```bash — the proxy executes the
+model's own answer as shell. Observed live through pi: asked to simplify a bash-heavy
+README, the model wrote a new README; its 7-9 embedded ```bash fences were each run as
+commands (garbage like `## Project…`), the model spiralled into confused "coaching", and
+ran `pnpm test`/`build`. This is the JSON→fenced tradeoff biting: `{"tool":...}` was
+unambiguous; ```bash collides with content.
+
+**Fix (shipped) — `isProseDocument`, chosen empirically.** `scripts/guard-experiment.mjs`
+ran candidate guards over real fixtures (the actual `README.md`, a model-written README,
+single actions, heredocs, mixed prose+action). Result: a response is a DOCUMENT (return as
+text, don't execute) iff **≥2 fences AND (≥120 chars of surrounding prose OR ≥4 fences)**.
+
+| guard | real-README | model-README | single actions | score |
+|---|---|---|---|---|
+| baseline | ✗ executes | ✗ executes | ✓ | 5/7 |
+| ≥3 fences | ✓ | ✗ (2 fences) | ✓ | 6/7 |
+| **≥2 fences + prose≥120** | ✓ | ✓ | ✓ | **7/7** |
+| prose≥200 | ✓ | ✓ | ✓ (risks chatty single action) | 7/7 |
+| command-likeness | ✗ | ✗ | ✓ | 5/7 (fragile) |
+
+Chose ≥2-fences+prose over prose≥200 because a **single** action is never reclassified
+regardless of prose — the coding loop is provably untouched. Handler returns the document
+as plain text (fences intact) instead of running it. `handler.ts` (`isProseDocument`),
+unit-tested, validated offline against the real README (6 fences → text).
+
+**Confidence.** High on the classifier (deterministic, real fixtures + units). The live
+README task remains stochastically flaky for *other* reasons (turn-1 confab, a model
+misreading `ls` output as file content) — orthogonal to this fix.
+
 ### What did NOT work (negative results, all this session)
 - **8 per-request prompt variants** (alone / env-is-real / first-move-forcing / batch-persona
   / verify-contract / terse / combined): **0 tool calls each.** Wording cannot flip the turn-1

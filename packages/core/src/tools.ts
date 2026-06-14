@@ -234,6 +234,24 @@ export function looksLikeConfabulation(text: string | null): boolean {
   return CONFABULATION_PATTERNS.some((re) => re.test(t));
 }
 
+/**
+ * Did the model write a DOCUMENT (prose with embedded code fences) rather than
+ * issue tool calls? The shell-routing parser greedily turns every ```bash block
+ * into a tool call, so a model answering "here's a simplified README" — whose
+ * markdown is full of ```bash / ```json examples — would get its own answer
+ * executed as shell. Catch that: a real agentic turn is ONE action with little
+ * prose; a document is multiple fences surrounded by substantial prose.
+ *
+ * Chosen empirically (scripts guard-experiment, README-about-bash fixture):
+ * ≥2 fences AND (≥120 chars of surrounding prose OR ≥4 fences). A SINGLE action
+ * is never reclassified regardless of prose, so the coding loop is untouched.
+ */
+export function isProseDocument(parsed: ParseResult): boolean {
+  if (!parsed.hasToolCalls || parsed.toolCalls.length < 2) return false;
+  const proseLen = parsed.textContent ? parsed.textContent.trim().length : 0;
+  return proseLen >= 120 || parsed.toolCalls.length >= 4;
+}
+
 export function parseToolCalls(text: string, tools?: ToolDef[]): ParseResult {
   // Fenced is the format: parse ```toolname blocks first. Needs the tool schemas
   // to map header/body args. The JSON parse below is only a tolerance fallback for

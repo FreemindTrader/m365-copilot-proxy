@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseToolCalls, formatToolDefinitions, looksLikeConfabulation } from "./tools.js";
+import { parseToolCalls, formatToolDefinitions, looksLikeConfabulation, isProseDocument } from "./tools.js";
 
 describe("parseToolCalls", () => {
   it("should parse a clean tool call with no extra text", () => {
@@ -174,6 +174,50 @@ describe("M365_INJECT_REPLY_TOOL", () => {
     const matches = out.match(/```reply/g) ?? [];
     expect(matches).toHaveLength(1);
     delete process.env.M365_INJECT_REPLY_TOOL;
+  });
+});
+
+describe("isProseDocument (don't execute a written document's code fences)", () => {
+  const bashTool = [{
+    type: "function" as const,
+    function: { name: "bash", description: "run", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } },
+  }];
+  const parse = (t: string) => parseToolCalls(t, bashTool);
+
+  it("flags a markdown answer full of ```bash fences as a document", () => {
+    const readme = `Here's a simplified README:
+
+# my-tool
+A thing that does stuff.
+
+## Install
+\`\`\`bash
+pnpm install && pnpm build
+\`\`\`
+
+## Run
+\`\`\`bash
+pnpm run proxy 4141
+\`\`\`
+That should be everything you need to get going quickly.`;
+    expect(isProseDocument(parse(readme))).toBe(true);
+  });
+
+  it("does NOT flag a single real action (the coding-loop case)", () => {
+    expect(isProseDocument(parse("```bash\nsed -i 's/a - b/a + b/' calc.py\n```"))).toBe(false);
+    expect(isProseDocument(parse("```bash\nls -la\n```"))).toBe(false);
+  });
+
+  it("does NOT flag a single action even with explanatory prose around it", () => {
+    expect(isProseDocument(parse("I'll inspect the files first.\n```bash\nls -la && cat calc.py\n```"))).toBe(false);
+  });
+
+  it("does NOT flag two terse back-to-back commands (no document prose)", () => {
+    expect(isProseDocument(parse("```bash\nls\n```\n```bash\ncat calc.py\n```"))).toBe(false);
+  });
+
+  it("returns false when there are no tool calls at all", () => {
+    expect(isProseDocument(parse("The answer is 42."))).toBe(false);
   });
 });
 

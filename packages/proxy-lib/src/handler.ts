@@ -6,6 +6,7 @@ import {
   formatMessages,
   parseToolCalls,
   looksLikeConfabulation,
+  isProseDocument,
   getMessageContent,
   noteRequestOutcome,
 } from "@m365-copilot/core";
@@ -300,7 +301,7 @@ export async function handleChatCompletion(
     const result = await runBuffered();
     if ("error" in result) return result.error;
     conv.sentMessageCount = body.messages.length;
-    const fullText = result.fullText;
+    let fullText = result.fullText;
 
     log.debug("Raw response (tool mode):", trunc(fullText, 1000));
     let parsed = parseToolCalls(fullText, body.tools);
@@ -326,8 +327,19 @@ export async function handleChatCompletion(
       const retry = await runBuffered();
       if ("error" in retry) return retry.error;
       conv.sentMessageCount = body.messages.length;
-      parsed = parseToolCalls(retry.fullText, body.tools);
+      fullText = retry.fullText;
+      parsed = parseToolCalls(fullText, body.tools);
       log.info(`After confab retry: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
+    }
+
+    // Document guard: the shell-routing parser turns every ```bash block into a
+    // tool call, so a model that ANSWERS with a markdown document full of code
+    // fences (e.g. "here's a simplified README") would get its own answer executed
+    // as shell. Detect that shape (multiple fences + prose) and return the document
+    // as plain text instead of running it. See isProseDocument (chosen empirically).
+    if (isProseDocument(parsed)) {
+      log.info(`Response is a prose document (${parsed.toolCalls.length} embedded fences), returning as text instead of executing`);
+      parsed = { hasToolCalls: false, toolCalls: [], textContent: fullText };
     }
 
     // Fail-closed: if model mixed text with tool calls, strip text and re-prompt once.
