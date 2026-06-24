@@ -272,6 +272,16 @@ const HALLUCINATED_COMPLETION_PATTERNS: RegExp[] = [
   /\bI(?:'ve|\s+have|\s+just|\s+now)?\s+(?:created|wrote|written|replaced|updated|saved|applied|added|overwrote|modified|generated|implemented|rewrote)\b/i,
   /\b(?:the\s+)?(?:file|readme|script|config|change|version|content)\s+(?:has|have|is|was|were)\s+(?:been\s+)?(?:created|replaced|updated|saved|written|applied|added|modified|overwritten)\b/i,
   /\bhere'?s\s+(?:the\s+)?(?:updated|new|simplified|replaced|final)\s+(?:file|readme|version|content)\b/i,
+  // Fakeable create-from-scratch hallucination (docs/hypotheses.md §8.12 / §9
+  // remaining gap): the model narrates having MADE and RUN a file with no tool
+  // call — e.g. "Created fizzbuzz.py and executed it with python3." The patterns
+  // above all need a leading "I" or a file/readme/script noun, so a bare
+  // "Created <name>.py" + "executed it" slips through. Catch both shapes:
+  //  (a) a bare past-tense create/write verb followed by a filename token
+  //      (≥2 chars before the dot, so abbreviations like "e.g."/"i.e." don't match);
+  //  (b) an execution claim ("executed it with python3", "ran the script").
+  /\b(?:created|wrote|written|generated|saved|added|produced|implemented|overwrote)\b[^.\n]{0,60}\b[\w-]{2,}\.[a-z]{1,4}\b/i,
+  /\b(?:executed|ran|invoked|launched|compiled)\b[^.\n]{0,40}\b(?:it|them|this|the\s+(?:script|program|file|code|command|tests?)|python3?|node|\S{2,}\.[a-z]{1,4})\b/i,
 ];
 
 /**

@@ -185,11 +185,26 @@ describe("looksLikeHallucinatedCompletion", () => {
     expect(looksLikeHallucinatedCompletion("Done — I updated calc.py and saved it.")).toBe(true);
   });
 
+  it("flags fakeable create-from-scratch hallucinations (no leading 'I')", () => {
+    // The exact §8.12 failure string — bare "Created <file>" + "executed it".
+    expect(looksLikeHallucinatedCompletion("Created fizzbuzz.py and executed it with python3.")).toBe(true);
+    expect(looksLikeHallucinatedCompletion("Wrote count_lines.py and ran it; the output is 42.")).toBe(true);
+    expect(looksLikeHallucinatedCompletion("Generated solution.js and executed it.")).toBe(true);
+    expect(looksLikeHallucinatedCompletion("I ran the script and it printed OK.")).toBe(true);
+    expect(looksLikeHallucinatedCompletion("Executed it with python3 — all tests pass.")).toBe(true);
+  });
+
   it("does NOT flag neutral prose, questions, or future intent", () => {
     expect(looksLikeHallucinatedCompletion("The hostname is web-prod-01.")).toBe(false);
     expect(looksLikeHallucinatedCompletion("I'll write the file next.")).toBe(false);
     expect(looksLikeHallucinatedCompletion("Which file should I edit?")).toBe(false);
     expect(looksLikeHallucinatedCompletion(null)).toBe(false);
+    // FP guards for the new fakeable-task patterns:
+    expect(looksLikeHallucinatedCompletion("The result is 56.")).toBe(false);
+    expect(looksLikeHallucinatedCompletion("Fixed the bug: add now returns a + b.")).toBe(false);
+    expect(looksLikeHallucinatedCompletion("Run `python3 check.py` to verify, e.g. in your shell.")).toBe(false);
+    expect(looksLikeHallucinatedCompletion("I ran into an issue understanding the request.")).toBe(false);
+    expect(looksLikeHallucinatedCompletion("This created some confusion, sorry.")).toBe(false);
   });
 });
 
