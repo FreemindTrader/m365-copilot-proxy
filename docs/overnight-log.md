@@ -52,6 +52,21 @@ A throttle-aware overnight framing A/B sweep is RUNNING in the background.
 - fix-bug SOLVED 2 tools/3 msgs/51s. Validation r1: fix-bug SOLVED under minimal/terse/baseline (3/3).
 
 ## Timeline / entries
+- 2026-06-25 00:43 — wake 2. **Found+fixed an orchestrator flaw.** Round 1 reached 14 cells
+  then hit a 3-ERROR streak (proof_demand/persona/react on find-needle) → triggered a 30-min
+  throttle backoff that recovered NOTHING, because **every ERROR was content-filter Disengaged,
+  not throttle** (confirmed in ~/.config/opencode-m365/debug.log: messageType:"Disengaged",
+  hiddenText:"> Conversation disengaged", offense:"None"). Account is HEALTHY — zero empty-throttle.
+  - **Signal building:** find-needle Disengages across MANY framings (recency, proof_demand,
+    persona, react all Disengaged; fewshot SOLVED it); fix-bug only persona Disengaged. So
+    Disengaged is per (task-content × framing-shape), consistent with F10.
+  - **Fix (commit 91c482c):** orchestrator now reads per-cell JSON to split ERROR →
+    DISENGAGED (fail-fast, normal cooldown) vs THROTTLE (F13, long backoff). Only THROTTLE
+    trips the streak. Killed old sweep, relaunched with fix (bg task bemd9qspp) at 00:44.
+  - **CSV note:** rows now = partial-old-round-1 + fresh-restarted-round-1. Don't trust the
+    `round` column as unique runs; AGGREGATE by (task,strategy), each row = 1 independent sample.
+  - **Env gotcha:** harness shell is zsh — `[ "$a" \> "$b" ]` string compare FAILS. Use row-count
+    deltas / file mtime, not `\>`.
 - 2026-06-25 00:09 — wake 1. Proxy UP, sweep alive (heartbeat <1min). Round 1 at 12/30 cells.
   Tally: SOLVED 9, ERROR 2, GAVE_UP_PROSE 1. Pace ~2.8 min/cell → ~85min/round.
   **Early signal (n=1 each, WATCH don't conclude):** both ERRORs were **Disengaged**
