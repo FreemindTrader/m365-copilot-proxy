@@ -29,11 +29,11 @@ Hard-won defaults for working on this proxy. Internalize these before touching a
    thread, many messages — is cheap; it's our *experiments* (a new thread per task) that
    burn the thread budget and trigger the throttle.
 
-2. **Chase rate-limit (and any API) hunches — tangents are encouraged.** This is an
-   undocumented API we're reverse-engineering. The moment you think *"oh, maybe throttling
-   works like X"* — stop and test it. A probe that teaches us how the limit behaves is
-   worth more than the task it interrupted. Same for any unexplained API behaviour. Record
-   what you learn in [`docs/hypotheses.md`](docs/hypotheses.md).
+2. **Chase all hunches — tangents are encouraged.** This is an undocumented API we're
+   reverse-engineering. The moment you think *"oh, maybe X works like this"* — stop and
+   test it. A probe that teaches us something true about the system is often worth more
+   than the task it interrupted. Don't suppress an idea because it's off the current
+   thread. Record what you learn in [`docs/hypotheses.md`](docs/hypotheses.md).
 
 3. **The end goal is always a usable agent in pi or openclaw.** Every change exists to make
    this proxy drop into pi/openclaw and actually drive a real coding loop. A clever protocol
