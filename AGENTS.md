@@ -17,6 +17,56 @@ of truth; keep it in sync if you change protocol behaviour.
 tool-call compliance experiments, the search for token/context-window data, the
 "how do we improve this proxy" backlog. Update it whenever an experiment lands.
 
+## Operating principles (read first)
+
+Hard-won defaults for working on this proxy. Internalize these before touching anything.
+
+1. **Always run sequentially — one thread at a time.** The rate limit is real but
+   weird: it tracks *conversations/threads started per unit time*, not messages (F13),
+   and it surfaces as `Disengaged`-looking 502s that are actually throttle. Never fire
+   concurrent requests, and never loop fresh conversations back-to-back. Space experiment
+   runs out (generous cooldowns between threads). A real pi/openclaw session — one long
+   thread, many messages — is cheap; it's our *experiments* (a new thread per task) that
+   burn the thread budget and trigger the throttle.
+
+2. **Chase rate-limit (and any API) hunches — tangents are encouraged.** This is an
+   undocumented API we're reverse-engineering. The moment you think *"oh, maybe throttling
+   works like X"* — stop and test it. A probe that teaches us how the limit behaves is
+   worth more than the task it interrupted. Same for any unexplained API behaviour. Record
+   what you learn in [`docs/hypotheses.md`](docs/hypotheses.md).
+
+3. **The end goal is always a usable agent in pi or openclaw.** Every change exists to make
+   this proxy drop into pi/openclaw and actually drive a real coding loop. A clever protocol
+   finding that doesn't move that needle is a footnote, not a win. Validate wins through a
+   real harness, not only the bench.
+
+4. **Be scientific: hypothesize → predict → test → conclude.** Turn every "I think X" into a
+   falsifiable hypothesis with the cheapest probe that settles it. Don't ship on a plausible
+   inference when the live API or the bench can decide it. Log it with sample size + an
+   evidence pointer.
+
+5. **Prompt tinkering: try N *wildly different* things at once, then let the data pick the
+   direction.** Never iterate on the first idea — that's how you spin in loops re-trying
+   variations of the same thing. Generate N genuinely distinct strategies (N = however many
+   real ideas you have), A/B them all on the bench in **one** sweep, read the scorecard, and
+   conclude a direction from the result. *Then* go deep on the winner.
+
+**Things easy to forget (added during the June 24 framing-sweep):**
+
+- **`Disengaged` is driven by jailbreak *shape*, not size (F10) — so a "stronger", more
+  aggressive ALL-CAPS prompt can itself trip the filter.** When tinkering (#5), always
+  include *leaner/softer* variants, not just heavier ones; the heavier prompt is often the
+  one that disengages. Watch `usage.x_m365_dea_score` — M365's own disengagement-eligibility
+  score — it rises *before* Disengaged fires (clean tool calls ~1e-8, prose ~1e-6,
+  jailbreak-shaped ~1e-3).
+- **n=1 is noise.** One SOLVED/Disengaged is a single sample on a stochastic,
+  throttle-confounded backend. Confirm a winner with `--repeat`, and control for order
+  effects (rotate strategy order across runs) before believing any number.
+- **Native tool-calling is permanently OUT OF SCOPE.** MCP / a full Dataverse bot need a
+  Copilot Studio license, which breaks the zero-cost premise (§8.11). Tangents (#2) are
+  great — but don't re-open this one; it's a closed dead-end. Tool calling stays
+  prompt-emulated.
+
 ## How we work — hypothesis-driven (default)
 
 This is a reverse-engineering project against an undocumented API. **The default
