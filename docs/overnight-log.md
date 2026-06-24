@@ -26,7 +26,10 @@ Goal: usable coding agent in pi/openclaw via the prompt-emulated shell-routing p
 
 ## LIVE STATE (read this first on wake-up)
 A throttle-aware overnight framing A/B sweep is RUNNING in the background.
-- **Orchestrator:** `scripts/bench/overnight-sweep.sh` (committed dbd94b7).
+- **Current bg sweep task:** `b8kcmtnfm` (relaunched wake-4 with task-order rotation).
+- **Orchestrator:** `scripts/bench/overnight-sweep.sh` (now rotates BOTH strategy and task order per round).
+- **Kill safely:** do NOT `pkill -f overnight-sweep` (matches your own zsh cmdline → exit 144).
+  Kill by PID filtered to bash: `for p in $(pgrep -f overnight-sweep); do [ "$(cat /proc/$p/comm)" = bash ] && kill $p; done`.
 - **Grid:** 10 framing strategies × 3 unfakeable tasks (fix-bug, find-needle, edit-config),
   ROUNDS=30, CELL_COOLDOWN=120s, rotated order per round. ~90 min/round → expect ~5-6 rounds/night.
 - **Results CSV (append-only):** `/tmp/m365-overnight.csv` (round,ts,task,strategy,outcome,tools,msgs,elapsed_s)
@@ -52,6 +55,19 @@ A throttle-aware overnight framing A/B sweep is RUNNING in the background.
 - fix-bug SOLVED 2 tools/3 msgs/51s. Validation r1: fix-bug SOLVED under minimal/terse/baseline (3/3).
 
 ## Timeline / entries
+- 2026-06-25 01:54 — wake 4. **edit-config Disengaged 8/8 across ALL framings** (incl baseline/
+  terse/reply_tool/fewshot). BUT discovered a **confound in my own sweep**: tasks ran in FIXED
+  order (fix-bug→find-needle→edit-config), so edit-config was ALWAYS last → task-content vs
+  position-in-round perfectly confounded. Time gradient (fix-bug early 10% DIS → find-needle mid
+  73% → edit-config late 100%) made this urgent to resolve.
+  - **Fix (commit a07f9fe):** rotate TASK order per round too. Killed sweep, relaunched (b8kcmtnfm).
+  - **Decisive early result:** round 1 now leads with find-needle, and it Disengaged on minimal
+    AND recency *while running first* (rested/early). So find-needle fragility = task-content, not
+    position. edit-config now runs 2nd this round — those samples (next wake) settle its case.
+  - edit-config benign prompt: "Edit config.json so the port is 8080 instead of 3000." — nothing
+    jailbreak-shaped, yet 100% Disengaged. Genuinely surprising RE finding if it holds off-position.
+  - **Gotcha:** `pkill -f overnight-sweep` self-matches the harness zsh cmdline → exit 144. Kill
+    bash PIDs via /proc/$p/comm filter (now in LIVE STATE).
 - 2026-06-25 01:19 — wake 3. Healthy (proxy up, sweep running, hb fresh). 28 cells.
   **Preliminary cross-tab** (ERROR treated as DISENGAGED — all 5 verified Disengaged at wake 2):
   - BY TASK: find-needle SOLVED 2 / DIS 7 /9 (**78% Disengaged**); fix-bug SOLVED 17 / DIS 2 /20
