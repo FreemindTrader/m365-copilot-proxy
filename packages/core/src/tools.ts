@@ -1,6 +1,7 @@
 import { createLogger } from "./log.js";
 import {
   buildSpecMap,
+  currentFramingVariant,
   deriveFencedSpec,
   formatFencedToolDefinitions,
   parseFencedToolCalls,
@@ -134,7 +135,8 @@ function toolCallSummary(rawArgs: string): string {
  * threshold a tiny bit. Safe with lean toolsets (<= ~10 tools).
  */
 function maybeInjectReplyTool(tools: ToolDef[]): ToolDef[] {
-  if (!process.env.M365_INJECT_REPLY_TOOL) return tools;
+  const enabled = process.env.M365_INJECT_REPLY_TOOL || currentFramingVariant() === "reply_tool";
+  if (!enabled) return tools;
   if (tools.some((t) => t.function.name === "reply")) return tools;
   const replyTool: ToolDef = {
     type: "function",
