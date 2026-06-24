@@ -52,5 +52,13 @@ A throttle-aware overnight framing A/B sweep is RUNNING in the background.
 - fix-bug SOLVED 2 tools/3 msgs/51s. Validation r1: fix-bug SOLVED under minimal/terse/baseline (3/3).
 
 ## Timeline / entries
+- 2026-06-25 00:09 — wake 1. Proxy UP, sweep alive (heartbeat <1min). Round 1 at 12/30 cells.
+  Tally: SOLVED 9, ERROR 2, GAVE_UP_PROSE 1. Pace ~2.8 min/cell → ~85min/round.
+  **Early signal (n=1 each, WATCH don't conclude):** both ERRORs were **Disengaged**
+  (content filter, confirmed in per-cell JSON), and both were the aggressively-shaped
+  framings — `persona` (fix-bug) and `recency` (find-needle). Matches F10 (Disengaged =
+  jailbreak *shape*, not size). Hypothesis to confirm across rounds: aggressive framings
+  (persona/recency, maybe negative/terse) Disengage more than lean ones (minimal/baseline),
+  forfeiting the whole task. The 1 GAVE_UP_PROSE: need to check which strategy.
 - 2026-06-24 night: session start. Env confirmed (clean tree, creds present, nix OK, bench present).
   msal-cache.json dated Jun 9 — expect silent-refresh or reauth on first live call.
