@@ -47,12 +47,18 @@ echo "[overnight] grid = $(( ${#STRATS[@]} * ${#TASKS[@]} )) cells/round; CSV=$C
 
 for round in $(seq 1 "$ROUNDS"); do
   echo "########## ROUND $round / $ROUNDS ($(date -Iseconds)) ##########"
-  ti=0
-  for task in "${TASKS[@]}"; do
+  nt=${#TASKS[@]}
+  # rotate TASK order per round too, so each task visits early/mid/late positions
+  # across rounds. Without this, task-content and position-in-round are perfectly
+  # confounded (a late task that Disengages could be content OR cumulative-window
+  # effect). With rotation, that's separable in analysis. (wake-4 fix)
+  for tj in $(seq 0 $((nt-1))); do
+    tidx=$(( (tj + round) % nt ))
+    task=${TASKS[$tidx]}
     n=${#STRATS[@]}
     for k in $(seq 0 $((n-1))); do
-      # rotate strategy start by (round + task index) so order varies every round
-      idx=$(( (k + ti + round) % n ))
+      # rotate strategy start by (round + task position) so order varies every round
+      idx=$(( (k + tj + round) % n ))
       s=${STRATS[$idx]}
 
       # wait for the proxy if it's down (it lives outside this script; if it stays
@@ -112,7 +118,6 @@ for round in $(seq 1 "$ROUNDS"); do
         sleep "$CELL_COOLDOWN"
       fi
     done
-    ti=$((ti+1))
   done
   echo "[overnight] round $round complete; tallies so far:"
   tail -n +2 "$CSV" | awk -F, '{c[$5]++} END{for(o in c) printf "    %s=%s\n", o, c[o]}'
