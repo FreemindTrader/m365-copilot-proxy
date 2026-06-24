@@ -368,6 +368,24 @@ M365 Copilot has **no native `tool_calls`**. We emulate it:
 
 > Empirically, the JSON *format* (bare vs ```` ```json ```` vs ```` ```tool_call ````) barely matters — all ~3/3 compliant **with the agent on**. The agent is the lever, not the syntax.
 
+### Model behaviour under tool calling (measurement traps)
+Two behaviours of the chat-tuned model distort any naïve "is it tool-calling yet?" read:
+
+- **It hallucinates success on *fakeable* tasks.** Asked to do something it can answer from
+  its own knowledge (write fizzbuzz, count lines), the model emits a confident *"created and
+  ran it"* prose claim with **zero tool calls** — it "knows" the answer, so it shortcuts the
+  loop. It only reliably calls a tool when the task is **unfakeable** — when proceeding
+  *requires* real file/command state it cannot guess (fix a bug it must read first, find a
+  value in a file, edit an exact config). So a compliance scoreboard built on fakeable tasks
+  flatters the model; weight the unfakeable ones (`needsTool` in `scripts/bench/tasks.mjs`).
+  This is the §9 F-series "create-from-scratch still fakes it" gap.
+- **The harness's own system prompt changes compliance.** The same model is *more* compliant
+  under the bench's short, blunt system prompt than under pi's longer, polished assistant
+  prompt — a strategy can score well on the bench and still confabulate turn-1 ("I can't
+  access the files, please paste them") under real pi (§9 F14). Consequence: the bench picks
+  the *direction*, but a win isn't real until a live **pi/openclaw** run confirms the model
+  actually drives the loop end-to-end.
+
 ### Creating the agent (`agent.ts`)
 1. **Discover the environment** via the BAP API:
    `GET https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/environments/~default?api-version=2023-06-01`
