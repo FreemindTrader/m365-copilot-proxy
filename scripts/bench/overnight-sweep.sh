@@ -77,16 +77,30 @@ for round in $(seq 1 "$ROUNDS"); do
       msgs=$(echo "$line"  | grep -oP 'msgs=\K[0-9]+'  | head -1); msgs="${msgs:-0}"
       elapsed=$(echo "$line" | grep -oP '\b\K[0-9]+(?=s\b)' | head -1); elapsed="${elapsed:-0}"
 
+      # Classify an ERROR by reading the just-written per-cell JSON. Disengaged is a
+      # per-request CONTENT refusal (fail-fast, account is fine) — it must NOT trigger
+      # the throttle backoff, or aggressive framings (which reliably Disengage) waste
+      # the night. Only empty-response/rate-limit (F13 thread-rate throttle) backs off.
+      if [ "$outcome" = "ERROR" ]; then
+        jf=$(ls -t scripts/bench/out/${label}-*.json 2>/dev/null | head -1)
+        if [ -n "$jf" ] && grep -qi 'disengaged' "$jf"; then
+          outcome="DISENGAGED"
+        elif [ -n "$jf" ] && grep -qiE 'empty response|rate limit|429|throttle' "$jf"; then
+          outcome="THROTTLE"
+        fi
+      fi
+
       echo "$round,$(date -Iseconds),$task,$s,$outcome,$tools,$msgs,$elapsed" >> "$CSV"
       printf '  [r%s] %-12s %-12s -> %-14s tools=%s msgs=%s %ss\n' "$round" "$task" "$s" "$outcome" "$tools" "$msgs" "$elapsed"
       date -Iseconds > "$HEARTBEAT"
 
-      # throttle accounting
-      if [ "$outcome" = "ERROR" ] || [ "$outcome" = "NOLINE" ]; then
-        err_streak=$((err_streak+1))
-      else
-        err_streak=0; backoff_mult=1
-      fi
+      # throttle accounting — ONLY real throttle/unknown-errors count toward the
+      # backoff streak. DISENGAGED is content-filter (not degradation); SOLVED /
+      # GAVE_UP_PROSE / MAX_TURNS are normal task outcomes. All reset the streak.
+      case "$outcome" in
+        THROTTLE|ERROR|NOLINE|PROXY_DOWN) err_streak=$((err_streak+1));;
+        *) err_streak=0; backoff_mult=1;;
+      esac
 
       if [ "$err_streak" -ge "$ERR_STREAK_TRIP" ]; then
         backoff=$(( BACKOFF_BASE * backoff_mult ))
