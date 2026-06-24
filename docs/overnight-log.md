@@ -52,6 +52,19 @@ A throttle-aware overnight framing A/B sweep is RUNNING in the background.
 - fix-bug SOLVED 2 tools/3 msgs/51s. Validation r1: fix-bug SOLVED under minimal/terse/baseline (3/3).
 
 ## Timeline / entries
+- 2026-06-25 01:19 — wake 3. Healthy (proxy up, sweep running, hb fresh). 28 cells.
+  **Preliminary cross-tab** (ERROR treated as DISENGAGED — all 5 verified Disengaged at wake 2):
+  - BY TASK: find-needle SOLVED 2 / DIS 7 /9 (**78% Disengaged**); fix-bug SOLVED 17 / DIS 2 /20
+    (10%); edit-config 0 samples yet (round reaches it after find-needle).
+  - BY STRATEGY: **persona = worst (0 SOLVED / 4, 100% Disengaged**, only framing to Disengage
+    fix-bug too). **fewshot = best so far (4/4 SOLVED, 0 Disengaged**, incl. find-needle).
+    Lean framings (baseline/minimal/terse/negative/reply_tool) 2/2 SOLVED, 0 DIS but thin n=2.
+    proof_demand 1/4 + 2 DIS, recency 2/4 + 2 DIS, react 2/3 + 1 DIS.
+  - Disengaged cells: find-needle|{persona×2,proof_demand×2,recency×2,react×1}, fix-bug|persona×2.
+  - **NOT graduated yet** — most cells n≤2. Need ≥~5/strategy + edit-config coverage. Watching:
+    persona-is-bad and fewshot-is-strong are the firming hypotheses; find-needle is filter-fragile.
+  - Design note (leave for now): task-major ordering over-samples fix-bug (20) vs find-needle (9)
+    vs edit-config (0) because each restart resets to fix-bug. OK as long as rounds complete.
 - 2026-06-25 00:43 — wake 2. **Found+fixed an orchestrator flaw.** Round 1 reached 14 cells
   then hit a 3-ERROR streak (proof_demand/persona/react on find-needle) → triggered a 30-min
   throttle backoff that recovered NOTHING, because **every ERROR was content-filter Disengaged,
