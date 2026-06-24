@@ -17,6 +17,20 @@ of truth; keep it in sync if you change protocol behaviour.
 tool-call compliance experiments, the search for token/context-window data, the
 "how do we improve this proxy" backlog. Update it whenever an experiment lands.
 
+[`docs/prompt-engineering.md`](docs/prompt-engineering.md) is the distilled
+reference for **prompting the Copilot model into tool-calling** — the load-bearing
+levers, the confirmed dead-ends, and the A/B scoreboard. Read it before tinkering
+with framing/format.
+
+**Where findings graduate to.** `docs/hypotheses.md` is the *messy, in-progress*
+layer. Once a finding is **decently conclusive** (real evidence, not n=1 noise),
+promote it out of the notebook into the right reference doc so it isn't lost:
+- **Protocol / API behaviour** (frames, auth, tones, throttling, Disengaged,
+  agents) → [`docs/m365-copilot-api.md`](docs/m365-copilot-api.md).
+- **Prompting / tool-calling strategy** (what framing/format makes the model act,
+  what backfires) → [`docs/prompt-engineering.md`](docs/prompt-engineering.md).
+Leave a one-line pointer + evidence reference behind in the notebook.
+
 ## Operating principles (read first)
 
 Hard-won defaults for working on this proxy. Internalize these before touching anything.
