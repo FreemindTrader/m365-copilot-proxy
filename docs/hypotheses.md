@@ -111,6 +111,27 @@ is clean; the "no clean fix" follows from the agent-needed-for-tools tension (we
 agent-path facts here rest on the bench/pi (valid). A real handler-level agent-less retry test
 would confirm, but the tool-call-reliability tension already makes it not worth shipping.
 
+**June 25 GUI capture — the agent IS the trigger; optionsSets are NOT the lever (decisive).**
+Drove Microsoft's OWN M365 Copilot web client headless (`scripts/m365-gui-capture.mjs`,
+Playwright+secrets login, captured the substrate Chathub WS frames) and gave it the exact
+"edit config.json port 8080" task:
+- The **GUI did NOT Disengage** — it just chatted ("here's the minimal precise patch…"). Confirms
+  eyes-on that the substitution task itself is fine; our agent path is what Disengages.
+- The GUI sends **`threadLevelGptId: {}` (NO agent)**, `tone: Magic`, `plugins:[BingWebSearch]`,
+  and a RICH `optionsSets` (`update_memory_plugin`, `add_custom_instructions`, `cwc_code_interpreter*`,
+  flux/image, …) + big `variants`/`allowedMessageTypes`. We send `optionsSets:[]` on the agent path.
+- **Tested the obvious fix:** merged the GUI's optionsSets into our AGENT path (new env
+  `M365_EXTRA_OPTIONSSETS`, session.ts) and re-ran edit-config → **still DISENGAGED 3/3**. So
+  optionsSets do not rescue the agent path: **the `threadLevelGptId` agent attachment itself is the
+  trigger** for a substitution task, independent of optionsSets/variants.
+**Consequence — the fix path is narrowed to one option.** There is no "match the GUI's flags and
+keep the agent" fix. To avoid the Disengage we MUST drop the agent (agent-less/DeepLeo never
+Disengages these — Phase A + GUI). The whole problem therefore reduces to the open frontier:
+**make agent-less shell-routing reliable** (agent-less currently emits ```bash only ~1/3 on minimal
+framing, 0/4 on baseline-which-Disengages). Next experiment: sweep agent-less DeepLeo framings for
+one that reliably elicits ```bash WITHOUT the heavy file-edit verbs that Disengage — if found,
+"drop the agent for tools" fixes F17 and may also unlock Claude-for-tools (the agent forces GPT).
+
 ### F18 — Framing shape modulates Disengage on a fragile task; aggressive framings backfire 🟡
 **Claim.** On the solvable tasks (`fix-bug`, `find-needle`) the framing strategy clearly
 affects the outcome, and the AGGRESSIVE/role-heavy framings Disengage MORE, not less. The

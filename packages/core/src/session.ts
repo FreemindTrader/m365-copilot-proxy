@@ -369,9 +369,14 @@ export class CopilotSession {
               clientCorrelationId: requestId,
               sessionId,
               // Code interpreter on the agent-less path only (see const above).
-              optionsSets: (!agentId && !process.env.M365_NO_CODE_INTERPRETER)
-                ? CODE_INTERPRETER_OPTIONS_SETS
-                : ([] as string[]),
+              // M365_EXTRA_OPTIONSSETS (comma-sep) merges in on ANY path — used to
+              // test whether matching the official GUI's rich optionsSets stops the
+              // agent-path "replace X→Y" Disengage (F17/F21). The GUI sends a rich
+              // set + NO agent; we send [] + agent and Disengage.
+              optionsSets: [
+                ...((!agentId && !process.env.M365_NO_CODE_INTERPRETER) ? CODE_INTERPRETER_OPTIONS_SETS : []),
+                ...(process.env.M365_EXTRA_OPTIONSSETS ? process.env.M365_EXTRA_OPTIONSSETS.split(",").map((s) => s.trim()).filter(Boolean) : []),
+              ],
               streamingMode: "ConciseWithPadding",
               spokenTextMode: "None",
               options: {},
