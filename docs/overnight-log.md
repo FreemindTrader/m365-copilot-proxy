@@ -25,8 +25,17 @@ Goal: usable coding agent in pi/openclaw via the prompt-emulated shell-routing p
   task-redesign; the create+execute pattern is the clean proxy-side win.
 
 ## LIVE STATE (read this first on wake-up)
-A throttle-aware overnight framing A/B sweep is RUNNING in the background.
-- **Current bg sweep task:** `brgoh98x5` (relaunched wake-5).
+**Framing sweep is STOPPED (its job is done — F18/F19 graduated).** Current background job is
+the **real-pi reliability run** (task `bc9hv50md`): `scripts/bench/pi-reliability.sh` N=10,
+driving the actual `pi` agent headless against the proxy on fix-bug, verifying each.
+- Results CSV: `/tmp/m365-pi-reliability.csv` (run,ts,outcome,elapsed,dir); log `/tmp/m365-pi-rel.log`.
+- Needs nix (pi) + python3-from-nixpkgs (resolved inside the script); runs ~20 min.
+- On wake: read the CSV → comply-rate (SOLVED/10). If solid, GRADUATE F20 (real-pi end-to-end
+  comply-rate, the F14 "~10x" ask). FAIL dirs are kept (pi.out) for diagnosis.
+- Proxy still persistent on :4141 with M365_FRAMING_FILE=/tmp/m365-framing (control file currently "minimal").
+- To resume the framing sweep for more F18 n: ROUNDS=30 CELL_COOLDOWN=120 bash scripts/bench/overnight-sweep.sh &
+
+### (history) earlier bg sweep tasks: brgoh98x5 (wake-5), b8kcmtnfm (wake-4), bemd9qspp, b1ilyr1u0.
 - **Grid NOW:** `TASKS="fix-bug fizzbuzz count-lines"` × 10 strategies. Dropped edit-config
   (conclusive: 100% Disengaged, F17) + find-needle (DIS story told). Added fakeable tasks
   fizzbuzz+count-lines to **validate the hallucination detector (fc92498/F16) LIVE** — on a
@@ -60,6 +69,19 @@ A throttle-aware overnight framing A/B sweep is RUNNING in the background.
 - fix-bug SOLVED 2 tools/3 msgs/51s. Validation r1: fix-bug SOLVED under minimal/terse/baseline (3/3).
 
 ## Timeline / entries
+- 2026-06-25 04:11 — wake 7. **BIG wake: F17 corrected (major novel finding) + real-pi validated.**
+  - F19 firmed: fizzbuzz 9/1, count-lines 9/1 SOLVED. Stopped the sweep (job done).
+  - **F17 investigation (probes A/B/C):** plain chat (DeepLeo) does NOT Disengage the exact
+    "edit config.json port" prompt or 5 variants (0/12, dea~1e-9). Agent+framing path DISENGAGES
+    2/2 every "replace literal X→Y in a file" variant (config.json, settings.txt, value.txt,
+    even non-port 42→99) but SOLVES create-file + find-and-fix. → trigger = **substitute-a-literal-
+    value request SHAPE on the AGENT path**, not config/port wording or numbers. Corrected &
+    rewrote F17 in hypotheses.md §10 (commit e98ab47). New: routing-path × request-shape Disengage axis.
+    Candidate proxy mitigation noted (Disengaged-retry that de-literalizes, or route such turns agent-less).
+  - **Real-pi end-to-end VALIDATED** (principle #3): wrote scripts/bench/pi-reliability.sh (drives
+    actual `pi --print` headless vs proxy, python3 via nixpkgs, per-run nonce for fresh convs).
+    Smoke SOLVED 63s; launched N=10 (bc9hv50md), run 1 SOLVED 72s. Pins the F14 ~10x comply-rate.
+  - Account STILL zero-throttle after ~4.5h. 2-week rest holds beautifully.
 - 2026-06-25 03:03 — wake 6. **Detector/fakeable validation = strong. F19 graduated.**
   - fizzbuzz 9/10 SOLVED (only persona DIS), count-lines 3/3 SOLVED — vs §8.12 baseline ~0/5.
     Almost all tools=1,msgs=2 → model acts on TURN 1 (no hallucination). So the framing closed
