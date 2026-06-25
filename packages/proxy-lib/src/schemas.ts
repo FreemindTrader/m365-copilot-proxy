@@ -42,6 +42,8 @@ export const ChatCompletionRequest = z.object({
   model: z.string().optional().default("m365-copilot"),
   messages: z.array(ChatMessage).min(1),
   stream: z.boolean().optional().default(false),
+  // OpenAI streaming option: include_usage=true → emit a final chunk with `usage`.
+  stream_options: z.object({ include_usage: z.boolean().optional() }).optional(),
   temperature: z.number().optional(),
   max_tokens: z.number().optional(),
   tools: z.array(ToolDefinition).optional(),

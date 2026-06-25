@@ -326,10 +326,21 @@ export async function handleChatCompletion(
     return { error: emptyResponseResponse(null) };
   }
 
+  // Produce the final turn result as DATA (not a Response), so the same logic
+  // renders as either JSON (non-stream) or an early-flushed SSE stream (stream).
+  // For streaming we return the SSE stream FIRST and run produce() INSIDE it, so the
+  // client gets HTTP 200 + a role chunk + heartbeats immediately instead of waiting
+  // out the whole (up to ~160s) M365 turn and risking a read-timeout.
+  type Produced =
+    | { kind: "error"; resp: Response }
+    | { kind: "text"; text: string }
+    | { kind: "tools"; toolCalls: ReturnType<typeof parseToolCalls>["toolCalls"] };
+
+  async function produce(): Promise<Produced> {
   // When tools are present, buffer full response to detect tool calls
   if (hasTools) {
     const result = await runBuffered();
-    if ("error" in result) return result.error;
+    if ("error" in result) return { kind: "error", resp: result.error };
     conv.sentMessageCount = body.messages.length;
     let fullText = result.fullText;
 
@@ -358,7 +369,7 @@ export async function handleChatCompletion(
       log.info(`${confab ? "Confabulation" : "Hallucinated completion"} detected (no tool call) — forcing retry ${attempt + 1}/${maxConfabRetries}`);
       text = confab ? CONFAB_FORCE_PROMPT : HALLUCINATION_FORCE_PROMPT;
       const retry = await runBuffered();
-      if ("error" in retry) return retry.error;
+      if ("error" in retry) return { kind: "error", resp: retry.error };
       conv.sentMessageCount = body.messages.length;
       fullText = retry.fullText;
       parsed = parseToolCalls(fullText, body.tools);
@@ -402,15 +413,7 @@ export async function handleChatCompletion(
           replyText = fullText;
         }
         log.info("Reply tool detected, converting to text response");
-        if (body.stream) {
-          return sseResponse(streamText(completionId, created, model, replyText));
-        } else {
-          return jsonResponse(200, {
-            id: completionId, object: "chat.completion", created, model,
-            choices: [{ index: 0, message: { role: "assistant", content: replyText }, finish_reason: outputFinishReason(replyText) }],
-            usage: buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount),
-          });
-        }
+        return { kind: "text", text: replyText };
       }
 
       if (realToolCalls.length > 0) {
@@ -430,52 +433,76 @@ export async function handleChatCompletion(
     }
 
     if (parsed.hasToolCalls && parsed.toolCalls.length > 0) {
-      if (body.stream) {
-        return sseResponse(streamToolCalls(completionId, created, model, parsed));
-      } else {
-        return jsonResponse(200, {
-          id: completionId, object: "chat.completion", created, model,
-          choices: [{
-            index: 0,
-            message: {
-              role: "assistant",
-              content: null,
-              tool_calls: parsed.toolCalls,
-            },
-            finish_reason: "tool_calls",
-          }],
-          usage: buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount),
-        });
-      }
-    } else {
-      if (body.stream) {
-        return sseResponse(streamText(completionId, created, model, fullText));
-      } else {
-        return jsonResponse(200, {
-          id: completionId, object: "chat.completion", created, model,
-          choices: [{ index: 0, message: { role: "assistant", content: fullText }, finish_reason: outputFinishReason(fullText) }],
-          usage: buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount),
-        });
-      }
+      return { kind: "tools", toolCalls: parsed.toolCalls };
     }
-  } else if (body.stream) {
-    // No tools, streaming — buffer with retry, then stream the result
-    const result = await runBuffered();
-    if ("error" in result) return result.error;
-    conv.sentMessageCount = body.messages.length;
-    return sseResponse(streamText(completionId, created, model, result.fullText));
+    return { kind: "text", text: fullText };
   } else {
-    // No tools, no streaming
+    // No tools — buffer with retry, return the text.
     const result = await runBuffered();
-    if ("error" in result) return result.error;
+    if ("error" in result) return { kind: "error", resp: result.error };
     conv.sentMessageCount = body.messages.length;
+    return { kind: "text", text: result.fullText };
+  }
+  } // end produce()
 
+  // --- Render: JSON (non-stream) or an early-flushed SSE stream (stream) ---
+  const includeUsage = !!body.stream_options?.include_usage;
+  const usage = () => buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount);
+
+  if (!body.stream) {
+    const p = await produce();
+    if (p.kind === "error") return p.resp;
+    if (p.kind === "tools") {
+      return jsonResponse(200, {
+        id: completionId, object: "chat.completion", created, model,
+        choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: p.toolCalls }, finish_reason: "tool_calls" }],
+        usage: usage(),
+      });
+    }
     return jsonResponse(200, {
       id: completionId, object: "chat.completion", created, model,
-      choices: [{ index: 0, message: { role: "assistant", content: result.fullText }, finish_reason: outputFinishReason(result.fullText) }],
-      usage: buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount),
+      choices: [{ index: 0, message: { role: "assistant", content: p.text }, finish_reason: outputFinishReason(p.text) }],
+      usage: usage(),
     });
   }
+
+  // Streaming: send HTTP 200 + a role chunk + keepalive comments from t=0, then run
+  // produce() INSIDE the stream so the client never waits out the whole M365 turn
+  // (up to ~160s) before the first byte — avoids client read-timeouts. (Tokens still
+  // arrive in one content chunk at the end; true incremental passthrough is a future
+  // step that would trade away the empty/disengage retry robustness in runBuffered.)
+  return sseResponse(new ReadableStream({
+    async start(controller) {
+      const enc = new TextEncoder();
+      const send = (obj: unknown) => controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
+      const base = { id: completionId, object: "chat.completion.chunk", created, model };
+      send({ ...base, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] });
+      const hb = setInterval(() => { try { controller.enqueue(enc.encode(": keepalive\n\n")); } catch {} }, 15000);
+      let p: Produced;
+      try { p = await produce(); }
+      catch (err: any) { p = { kind: "error", resp: jsonResponse(502, { error: { message: err?.message ?? "stream error", type: "upstream_error" } }) }; }
+      clearInterval(hb);
+      try {
+        if (p.kind === "error") {
+          let message = "upstream error";
+          try { message = (JSON.parse(await p.resp.text())?.error?.message) || message; } catch {}
+          // HTTP 200 is already committed, so surface the failure as an in-stream error chunk.
+          send({ ...base, error: { message, type: "upstream_error" } });
+        } else if (p.kind === "tools") {
+          p.toolCalls.forEach((tc, i) =>
+            send({ ...base, choices: [{ index: 0, delta: { tool_calls: [{ index: i, id: tc.id, type: "function", function: { name: tc.function.name, arguments: tc.function.arguments } }] }, finish_reason: null }] }));
+          send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], ...(includeUsage ? { usage: usage() } : {}) });
+        } else {
+          send({ ...base, choices: [{ index: 0, delta: { content: p.text }, finish_reason: null }] });
+          send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: outputFinishReason(p.text) }], ...(includeUsage ? { usage: usage() } : {}) });
+        }
+      } catch {
+        // client likely disconnected mid-emit — nothing more to do
+      } finally {
+        try { controller.enqueue(enc.encode("data: [DONE]\n\n")); controller.close(); } catch {}
+      }
+    },
+  }));
 }
 
 /**
@@ -562,68 +589,5 @@ function emptyResponseResponse(throttle: { current: number; max: number } | null
   });
 }
 
-function streamToolCalls(
-  completionId: string, created: number, model: string,
-  parsed: ReturnType<typeof parseToolCalls>,
-): ReadableStream {
-  return new ReadableStream({
-    start(controller) {
-      const enc = new TextEncoder();
-
-      controller.enqueue(enc.encode(`data: ${JSON.stringify({
-        id: completionId, object: "chat.completion.chunk", created, model,
-        choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
-      })}\n\n`));
-
-      for (let i = 0; i < parsed.toolCalls.length; i++) {
-        const tc = parsed.toolCalls[i];
-        controller.enqueue(enc.encode(`data: ${JSON.stringify({
-          id: completionId, object: "chat.completion.chunk", created, model,
-          choices: [{
-            index: 0,
-            delta: {
-              tool_calls: [{
-                index: i, id: tc.id, type: "function",
-                function: { name: tc.function.name, arguments: tc.function.arguments },
-              }],
-            },
-            finish_reason: null,
-          }],
-        })}\n\n`));
-      }
-
-      controller.enqueue(enc.encode(`data: ${JSON.stringify({
-        id: completionId, object: "chat.completion.chunk", created, model,
-        choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
-      })}\n\n`));
-      controller.enqueue(enc.encode("data: [DONE]\n\n"));
-      controller.close();
-    },
-  });
-}
-
-function streamText(
-  completionId: string, created: number, model: string, text: string,
-): ReadableStream {
-  const finishReason = outputFinishReason(text);
-  return new ReadableStream({
-    start(controller) {
-      const enc = new TextEncoder();
-
-      controller.enqueue(enc.encode(`data: ${JSON.stringify({
-        id: completionId, object: "chat.completion.chunk", created, model,
-        choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
-      })}\n\n`));
-      controller.enqueue(enc.encode(`data: ${JSON.stringify({
-        id: completionId, object: "chat.completion.chunk", created, model,
-        choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
-      })}\n\n`));
-      controller.enqueue(enc.encode(`data: ${JSON.stringify({
-        id: completionId, object: "chat.completion.chunk", created, model,
-        choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
-      })}\n\n`));
-      controller.enqueue(enc.encode("data: [DONE]\n\n"));
-      controller.close();
-    },
-  });
-}
+// (streaming is emitted inline by the early-flushed SSE renderer in
+// handleChatCompletion; the old streamText/streamToolCalls helpers were removed.)
