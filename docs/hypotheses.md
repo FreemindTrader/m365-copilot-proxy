@@ -148,44 +148,72 @@ reliable shell-routing is the only way out.
 Agents in the real M365 GUI sidebar, and our proxy conversations show in the chat list (named
 `<conversation_id>…` from our first-message tag) — the agent path can be exercised by hand in the GUI.
 
-### F22 — ROOT CAUSE of the substitution-Disengage: naming the OLD value to replace 🟢
-**Claim (this supersedes the "it's the agent" reading of F17/F21).** The Disengage is triggered
-by **request phrasing that names the existing literal being replaced** ("X **instead of** Y",
-"**from** 3000 **to** 8080", "**replace** 3000 **with** 8080") — which reads to M365's filter as
-content-tampering/injection. Phrasing the SAME edit by naming only the **target** sails through,
-agent and tools and all. It is NOT the agent, the connection, optionsSets, or "editing an existing
-file" per se.
-**Evidence (agent path, via the proxy, n=1 each — but unambiguous):**
-| phrasing | outcome |
-|---|---|
-| "Edit config.json so the port is 8080 **instead of 3000**" | REFUSE |
-| "**Set** the port in config.json to 8080" | ✅ TOOL_CALL |
-| "Update config.json so the app **listens on** port 8080" | ✅ TOOL_CALL |
-| "config.json has the wrong port; **fix it so** the port is 8080" | ✅ TOOL_CALL |
-| "In config.json, **change** the port to 8080" | ✅ TOOL_CALL |
+### F22 — The substitution-Disengage is Prompt-Shields JAILBREAK detection: an ADDITIVE shape threshold 🟢
+**Claim (this corrects/supersedes the earlier F22 "naming the old value" reading AND the F17/F21
+"it's the agent" reading — both were confounded).** The Disengage on benign edits is Microsoft's
+**Azure AI Content Safety "Prompt Shields" (jailbreak / prompt-attack detection)** — a *shape-based,
+additive, probabilistic* classifier that scores "instruction-override / command-imperative" patterns
+and fires when the cumulative score crosses a threshold. No single token is "the trigger"; weak
+signals SUM. `messageType:"Disengaged"`, `offense:"None"`, `contentOrigin:"Apology"` = the jailbreak
+path (NOT the offensive-content `OffensiveRequestClassifier` path).
 
-This also explains why fix-bug (10/10) and ec-create (write new file) and find-and-fix never
-Disengage — none name an old literal to replace. And it explains ec-bugfix DISENGAGING earlier:
-it said "the port is set to 3000 but should be 8080" — still names the old value.
-**Correction to F21's agent-less claim.** Agent-less does NOT escape it: the proxy's agent-less
-retry returned the apology refusal "it looks like I can't chat about this" 5/5 — i.e. agent-less
-ALSO refuses the "instead of 3000" ask, just surfaced as apology TEXT instead of a `Disengaged`
-frame (so the earlier "agentless 0/3 disengaged" was a measurement artifact — it only counted the
-`Disengaged` messageType, missing apology refusals). So the agent is NOT the trigger; the phrasing
-is. The agent-less-retry mitigation was implemented, tested (ineffective), and reverted.
-**Also found:** a Disengaged conversation appears to STAY Disengaged (a clean agent-less retry in
-the same conversation refused 5/5; a fresh conversation is needed) — a per-conversation sticky
-refusal state.
-**Fix options (the real solve, not yet shipped — needs a decision):**
-1. *Guidance:* phrase edits as "set/change X to TARGET", never "TARGET instead of OLD". Zero code.
-2. *Proxy rephrase-on-Disengage:* detect "<old> instead of/from/replace" patterns in the user turn
-   and retry once with the old-value clause stripped (in a fresh conversation). Targeted now that
-   the exact trigger is known; low downside (only fires after a Disengage). Some semantic risk.
-3. *Reframe-on-Disengage:* retry wrapping the task as a goal/end-state ("achieve: <task>") — simpler
-   than parsing, untested.
-**Confidence.** High on the trigger (5 wordings, clean split; reproduced the refuse + 4 passes).
-**Falsification.** A target-only phrasing that still Disengages, or an "instead of"/"replace X with"
-phrasing that tool-calls.
+**Decisive evidence — interleaved A/B/C, n=5 each, same account state (controls for time/throttle):**
+| prompt | outcome |
+|---|---|
+| **A** "Edit config.json so the port is 8080 **instead of 3000. Leave every other field unchanged.**" | **DISENGAGED 5/5** |
+| **B** "Edit config.json so the port is 8080 instead of 3000." (replace-imperative ALONE) | TOOL_CALL 5/5 |
+| **C** "Set the port in config.json to 8080. Leave every other field unchanged." (override-clause ALONE) | TOOL_CALL 5/5 |
+So it is an **INTERACTION**: "replace X with Y" (command shape) + "leave every other field unchanged"
+(= "ignore/disregard the rest", override shape) each sit *below* threshold; together they cross it.
+
+**Why the earlier single-shot tests lied (the §-wide lesson — "quadruple-check").** My first wording
+sweep (W1 refuse / W2–5 pass, n=1) confounded TWO co-varying clauses — W1 had *both* "instead of 3000"
+AND "leave every other field unchanged"; W2–5 dropped *both*. I wrongly concluded "naming the old
+value." The matrix probe (`scripts/disengage-matrix.sh`) then showed "instead of 3000" ALONE
+tool-calls 2/2, breaking the confound; the interleaved A/B/C nailed the interaction. Classic additive
+threshold: small wording deltas move you across it, so n=1 + uncontrolled wording = noise.
+
+**Reconciles everything:**
+- Plain chat + combo (the real GUI) → no agent override-signal → UNDER threshold → fine (Phase A, GUI capture).
+- Agent + combo → agent's tool-descriptions/framing add baseline override-shape signal → OVER → Disengage.
+  (So F17/F21 "the agent is the trigger" was half-right: the agent CONTRIBUTES signal, it isn't the sole cause.)
+- Agent + single clause (B or C) → under → fine. Agent + both (A) → over → Disengage.
+- fix-bug / ec-create / find-and-fix never Disengage: no override-shape clause.
+- Research-confirmed: Prompt Shields is officially shape-based, **admits false positives**, runs on
+  turn-1 AND on the agent's own instructions/tool descriptions (→ worse in agent/Studio contexts),
+  and the "ignore/forget/disregard previous instructions/rules" category is exactly what
+  "leave everything else unchanged" mimics. Sources in §10-refs below.
+
+**NOT rate-limiting (but they can co-occur).** The interleaved A/B/C fire at identical request rate;
+only A fails → content-shape, not rate. Throttle (F13) has a DIFFERENT signature: empty reply +
+`ReferencesListComplete`, NO `Disengaged` frame. Open hypothesis worth a load-vs-disengage-rate test:
+does degradation LOWER the Prompt-Shields threshold (borderline shapes disengage more under load)?
+Unproven; the combo trips 5/5 on a zero-throttle account, so the shape-trigger stands alone.
+
+**Fix options (the real solve — needs a decision):**
+1. *Guidance / framing:* avoid override-shaped clauses in the per-request framing AND advise edits as
+   "set/change X to TARGET" without an "ignore/leave-everything-else" meta-instruction. Also audit OUR
+   agent instructions + tool descriptions for override-shaped text (research: that's a common culprit).
+2. *Proxy rephrase-on-Disengage:* on a Disengage, retry once stripping override-shaped clauses
+   ("leave/keep everything else…", "ignore the rest", "replace A with") in a FRESH conversation
+   (a Disengaged conversation appears sticky — needs a new ConversationId). Low downside; some semantic risk.
+3. *Lower content-moderation level* (Copilot Studio prompt setting Low/Moderate/High) — but jailbreak/
+   prompt-injection defense is "always enforced, can't be disabled", so this won't fully fix it.
+**Confidence.** High on the interaction + jailbreak-path mechanism (interleaved 5/5 split + official
+docs). Medium on the exact additive weights (it's threshold-noisy; e.g. ec-plain "contains 3000,
+change it" disengaged earlier but "replace 3000 with 8080" didn't — both replace-shaped, so wording
+nuance + possible context modulation moves the score). Treat it as a fuzzy threshold, not a rule.
+**Falsification.** A single override-clause (B or C shape) that Disengages alone on a rested account;
+or the combo (A) tool-calling. Re-test if Microsoft retunes Prompt Shields.
+
+**§10-refs (from the June 25 web dig — see also AGENTS.md):**
+- Prompt Shields (jailbreak detection, shape-based, admits false positives): learn.microsoft.com/azure/ai-services/content-safety/concepts/jailbreak-detection
+- Copilot Studio RAI: content evaluated twice (input+output), covers jailbreak/prompt-injection; surfaces as `ContentFiltered`: learn.microsoft.com/troubleshoot/power-platform/copilot-studio/generative-answers/agent-response-filtered-by-responsible-ai
+- `Disengaged` WS protocol + `OffensiveRequestClassifier` (Zenity RE of the BizChat API): labs.zenity.io/p/access-copilot-m365-terminal
+- Agent instructions/tool-descriptions tripping the filter (first-hand fix): iiu.dk/2025/09/18/copilot-studio-contentfiltered/
+- Jailbreak false-positives on command/imperative shapes + sanitize "ignore/override/bypass", retry w/ backoff: learn.microsoft.com/answers/questions/2244789
+- Always-enforced (can't disable) prompt-injection defense: learn.microsoft.com/microsoft-365/copilot/harmful-content-protection-copilot-chat
+- NOTE: "DEA / dea_violation / disengagement-eligibility" has ZERO external corroboration — likely internal-only; our `x_m365_dea_score` naming is our own inference, keep that caveat.
 
 ### F18 — Framing shape modulates Disengage on a fragile task; aggressive framings backfire 🟡
 **Claim.** On the solvable tasks (`fix-bug`, `find-needle`) the framing strategy clearly
