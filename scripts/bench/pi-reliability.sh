@@ -34,6 +34,11 @@ for i in $(seq 1 "$N"); do
   if [ "$TASK" = edit-config ]; then
     printf '{\n  "name": "app",\n  "port": 3000,\n  "debug": false\n}\n' > "$D/config.json"
     PROMPT="Edit config.json so the port is 8080 instead of 3000. Leave every other field unchanged."
+  elif [ "$TASK" = multi ]; then
+    printf 'def average(nums):\n    return sum(nums) / len(nums) + 1\n\ndef total(nums):\n    return sum(nums)\n' > "$D/mathutil.py"
+    printf 'from mathutil import average, total\ndata = [2, 4, 6]\nprint("avg", average(data), "total", total(data))\n' > "$D/report.py"
+    printf "from mathutil import average, total\nassert average([2,4,6]) == 4.0, 'average wrong'\nassert total([2,4,6]) == 12, 'total wrong'\nassert average([10,20]) == 15.0, 'average wrong'\nprint('OK')\n" > "$D/test.py"
+    PROMPT="There is a bug in this Python project: running 'python3 test.py' fails an assertion. Investigate the files, find and fix the bug, and make 'python3 test.py' print OK. Verify it."
   else
     printf 'def add(a, b):\n    return a - b\n' > "$D/calc.py"
     printf "from calc import add\nassert add(2, 3) == 5, 'add is wrong'\nassert add(10, 4) == 14, 'add is wrong'\nprint('OK')\n" > "$D/check.py"
@@ -53,6 +58,8 @@ EOF
       > "$D/pi.out" 2>&1 )
   if [ "$TASK" = edit-config ]; then
     "$PYBIN/python3" -c "import json,sys;c=json.load(open('$D/config.json'));sys.exit(0 if c.get('port')==8080 and c.get('name')=='app' and c.get('debug')==False else 1)" 2>/dev/null && ok=1 || ok=0
+  elif [ "$TASK" = multi ]; then
+    "$PYBIN/python3" "$D/test.py" 2>/dev/null | grep -qx OK && ok=1 || ok=0
   else
     "$PYBIN/python3" "$D/check.py" 2>/dev/null | grep -qx OK && ok=1 || ok=0
   fi

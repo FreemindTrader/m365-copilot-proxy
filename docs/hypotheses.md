@@ -182,6 +182,15 @@ find-and-fix coding task," the core loop — not "every request succeeds." (b) S
 tone/day. (c) pi runs model commands on the host (benign task, temp dir).
 **Next.** Test real pi on (i) a "change X→Y" task (does F17's agent-Disengage actually bite
 pi usage?), (ii) a multi-file/harder task, (iii) under pi's own system prompt vs the bench's.
+**Generality (June 25, follow-up):** a HARDER multi-file task (bug in `mathutil.py` caught by
+`test.py`, requires read→run→reason→fix across files, NO literal substitution given) through
+real pi = **3/4 SOLVED** (mean 77s). The 1 failure was a **hallucinated completion**: the model
+printed "OK" and offered to explain the test while `mathutil.py` stayed unfixed — the residual
+hallucination tail on harder tasks (its "OK" phrasing had no past-tense mutation claim, so
+`looksLikeHallucinatedCompletion` didn't catch it). So F20 generalizes beyond the single
+canonical task (the loop investigates multiple files and fixes real logic bugs), but harder/
+multi-step tasks carry a ~10-25% hallucinated-success tail (n small) that the framing+detectors
+don't fully close — the honest ceiling of the prompt-emulated path. (i) is F17/F21; (iii) untested.
 
 ---
 

@@ -8,6 +8,10 @@ Goal: usable coding agent in pi/openclaw via the prompt-emulated shell-routing p
 **Headline: the ultimate goal is VALIDATED.** Real `pi` (the actual coding agent, headless),
 backed by M365 Copilot through the proxy, fixes a real bug end-to-end **10/10** (F20, mean 107s,
 zero failures). The proxy drives a genuine agentic loop reliably on the core find-and-fix task.
+**Generality check:** a harder MULTI-FILE bug (read→run→reason→fix across files) = **3/4** via
+real pi; the 1 miss was a hallucinated "OK" with the file unfixed — the honest residual tail on
+harder tasks (~10-25%, n small) that framing+detectors don't fully close. The loop generalizes;
+perfection on hard tasks doesn't. Net: a genuinely usable coding agent for everyday find-and-fix work.
 
 **What the night produced** (all on a 2-week-rested account that stayed **zero-throttle the
 entire ~5.5h** — F13 thread-throttle never fired once; spacing worked):
