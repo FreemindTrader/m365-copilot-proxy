@@ -36,27 +36,45 @@ fenced shell-routing. Orchestrator `scripts/bench/overnight-sweep.sh` rotates BO
 strategy and task order per round (controls the §M caveat-4 order effect AND the
 task-position confound). Raw: `/tmp/m365-overnight.csv` + `scripts/bench/out/ov-*.json`.
 
-### F17 — A benign config-edit task Disengages 100%, independent of framing AND round-position 🟢
-**Claim.** The `edit-config` bench task — prompt verbatim *"Edit config.json so the port
-is 8080 instead of 3000. Leave every other field unchanged."* — trips the Disengaged
-filter on EVERY turn-1 attempt: **15/15**, across all 10 framing strategies (incl. the
-leanest `baseline`/`minimal`/`terse` and the otherwise-flawless `fewshot`), and in two
-different round-positions (last, in the fixed-order run; 2nd, after task-order rotation).
-So it is neither a framing-shape effect nor a cumulative-window/position effect — it is
-the **task content itself**.
-**Evidence.** n=15 Disengaged (`messageType:"Disengaged"`, `offense:"None"`, `hiddenText:
-"> Conversation disengaged"` in debug.log). Contrast: `fix-bug` 2/20 Disengaged, `find-needle`
-19/25. Rotating task order (commit a07f9fe) is what killed the position confound.
-**Why it matters / the surprise.** The prompt has zero jailbreak shape and a tiny input,
-yet "edit a config file / change a port" reliably trips the filter while "fix a Python
-bug" rarely does. This **extends F10**: jailbreak *shape* isn't the only Disengage axis —
-certain benign *intents* (config/system modification phrasing?) are filtered on content.
-**Falsification / next probe (NOT yet run — sweep owns the thread budget):** vary the
-edit-config prompt — (a) strip "config"/"port" wording ("change 3000 to 8080 in
-settings.txt"), (b) frame the identical edit as "fix the bug", (c) a non-config file. If
-the Disengage tracks the config/port wording, that's the trigger. **Live-agent
-implication:** real coding agents WILL edit config files — if this generalizes, the proxy
-may need a Disengage-retry that rephrases config-edit asks, or this is a hard ceiling.
+### F17 — The AGENT path Disengages on "replace literal value X→Y in a file" requests 🟢
+**Claim (corrected — supersedes the wake-5 "task content" reading).** On the declarative-
+agent + tool-framing path, a request shaped like *"the file contains X, change it to Y"* /
+*"set the port to 8080 instead of 3000"* reliably trips the Disengaged filter — turn-1,
+before any tool runs. It is NOT the config/port/json vocabulary, NOT the specific numbers,
+and NOT file-writing in general. It is the **substitute-a-specific-literal-value-in-an-
+existing-file request shape, on the agent path specifically**. The identical prompts in
+plain chat (DeepLeo, no agent/tools) do NOT Disengage at all.
+**Evidence (June 25, magic tone, `minimal` framing for the agent runs):**
+- *Plain chat, no agent/tools (Phase A, n=2 each):* the exact "Edit config.json…port 8080
+  instead of 3000" prompt and 5 reworded variants — **0/12 Disengaged**, dea_violation
+  ~1e-9 (clean; fix-bug actually highest at 7e-9). `scripts/disengage-config-probe.mjs`.
+- *Agent + framing path (Phases B/C, n=2 each):* DISENGAGE 2/2 for every "replace X→Y"
+  variant — `edit-config` (config.json/port), `ec-bugfix` ("has a bug…port should be 8080,
+  fix it"), `ec-notes` (settings.txt, no json), `ec-plain` ("value.txt contains 3000, change
+  to 8080" — no config/port words), `ec-nonport` ("42 → 99" — non-port numbers). SOLVE 2/2
+  for `ec-create` ("create greeting.txt with 'hello world'") and `fix-bug` ("find and fix
+  the bug" — no literal substitution given). Earlier sweep: `edit-config` 15/15 Disengaged
+  across all 10 framings; `fix-bug` 2/20; fizzbuzz/count-lines (create) ~9/10 solved.
+  Tasks added to `scripts/bench/tasks.mjs` (ec-*). CSVs `/tmp/m365-f17{b,c}.csv`.
+**Discriminator (what flips it):** the prompt names a specific existing value and a specific
+replacement ("change X to Y" / "X should be Y, fix it"). Create-a-file and find-and-fix-the-
+bug (where the fix isn't given as a literal) both pass. **Speculation:** the agent-path
+classifier reads "replace this exact content with that exact content in a file" as a
+file-tampering / injection shape; DeepLeo (plain chat) does not apply this.
+**Why it matters / extends F10.** Disengage isn't only jailbreak *shape* (F10) or input
+size (F10) — the **declarative-agent classifier is stricter than DeepLeo** and fires on a
+benign *request shape* that plain chat accepts. New axis: routing path × request shape.
+**Confidence.** High that the pattern is real and agent-specific (perfectly consistent
+across wording/number variants n=2 each + 15/15 sweep; plain chat clean on identical text).
+Medium on the exact boundary (small n; "literal substitution" is the best-fitting rule but
+untested against e.g. "increment the value" / multi-line replaces).
+**Falsification / next probes.** (a) Plain chat + the SAME framing block but no agent →
+isolates agent-vs-framing (I only tested no-framing plain chat). (b) "double the value in
+value.txt" (a transform, not a stated literal) — predict SOLVE. (c) multi-line literal
+replace. **Live-agent implication (toward the goal):** real harnesses DO send "change X to
+Y" asks. Candidate proxy mitigation: on Disengaged, auto-retry once rephrasing a literal-
+substitution ask into a find-and-fix/transform framing (e.g. drop the explicit target), or
+route such turns agent-less (DeepLeo tolerated them). Worth a controlled test before shipping.
 
 ### F18 — Framing shape modulates Disengage on a fragile task; aggressive framings backfire 🟡
 **Claim.** On the solvable tasks (`fix-bug`, `find-needle`) the framing strategy clearly

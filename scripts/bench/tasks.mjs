@@ -56,4 +56,43 @@ export const TASKS = [
     prompt: "Create a bash script named count.sh that counts the number of lines in data.txt and writes ONLY that number (nothing else) to a file named count.txt. Then run it.",
     verifyCmd: 'test "$(cat count.txt 2>/dev/null | tr -d "[:space:]")" = "7"',
   },
+  // --- F17 Disengage-trigger probe variants (docs hypotheses §10). The original
+  // edit-config Disengages 100% via the agent+tool path but NOT in plain chat, so
+  // the trigger is the (agent/tool-framing × config-edit wording) interaction.
+  // These isolate WHICH wording, on the identical agent path. Same edit, varied prose. ---
+  {
+    name: "ec-bugfix",   // "fix the bug" framing instead of "edit the config"
+    needsTool: true,
+    files: { "config.json": '{\n  "name": "app",\n  "port": 3000,\n  "debug": false\n}\n' },
+    prompt: "config.json has a bug: the port is set to 3000 but it should be 8080. Find and fix it, leaving every other field unchanged.",
+    verifyCmd: "python3 -c \"import json;c=json.load(open('config.json'));assert c['port']==8080 and c['name']=='app' and c['debug']==False\"",
+  },
+  {
+    name: "ec-notes",    // same edit, plain .txt file, no 'config.json'/json
+    needsTool: true,
+    files: { "settings.txt": "port=3000\nname=app\ndebug=false\n" },
+    prompt: "In settings.txt, change the port value from 3000 to 8080. Leave everything else unchanged.",
+    verifyCmd: "grep -qx 'port=8080' settings.txt",
+  },
+  {
+    name: "ec-plain",    // no config/port/json words at all — bare number edit
+    needsTool: true,
+    files: { "value.txt": "3000\n" },
+    prompt: "The file value.txt contains the number 3000. Change it to 8080.",
+    verifyCmd: "test \"$(cat value.txt 2>/dev/null | tr -d '[:space:]')\" = '8080'",
+  },
+  {
+    name: "ec-nonport",  // same shape as ec-plain but NON-port numbers (42->99)
+    needsTool: true,
+    files: { "value.txt": "42\n" },
+    prompt: "The file value.txt contains the number 42. Change it to 99.",
+    verifyCmd: "test \"$(cat value.txt 2>/dev/null | tr -d '[:space:]')\" = '99'",
+  },
+  {
+    name: "ec-create",   // CREATE (not edit) a benign file — agent-path write control
+    needsTool: true,
+    files: {},
+    prompt: "Create a file named greeting.txt containing exactly the text: hello world",
+    verifyCmd: "test \"$(cat greeting.txt 2>/dev/null)\" = 'hello world'",
+  },
 ];
