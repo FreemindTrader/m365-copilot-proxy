@@ -3,6 +3,47 @@
 Durable scratch log so work survives context summarization. Newest entries at top.
 Goal: usable coding agent in pi/openclaw via the prompt-emulated shell-routing path.
 
+## ☀️ END-OF-NIGHT SUMMARY (for Alex, ~05:30 2026-06-25)
+
+**Headline: the ultimate goal is VALIDATED.** Real `pi` (the actual coding agent, headless),
+backed by M365 Copilot through the proxy, fixes a real bug end-to-end **10/10** (F20, mean 107s,
+zero failures). The proxy drives a genuine agentic loop reliably on the core find-and-fix task.
+
+**What the night produced** (all on a 2-week-rested account that stayed **zero-throttle the
+entire ~5.5h** — F13 thread-throttle never fired once; spacing worked):
+- **F20** 🟢 — real pi fixes a bug 10/10 end-to-end (the goal; principle-#3 validation).
+- **F19** 🟢 — the §8.12 fakeable-task hallucination is **closed**: fizzbuzz 9/1, count-lines 9/1
+  SOLVED (was ~0/5). Driven by the shell-routing framing (model acts turn-1), not the detector.
+  Confab-retry (F16) **validated live** (fired 2×, salvaged both).
+- **F18** 🟡 — framing A/B: the **shipped `baseline` is near-optimal** (100% on solvable tasks,
+  tied with `fewshot`); aggressive framings BACKFIRE (`persona` 0%, Disengages even fix-bug).
+  Actionable: don't replace baseline with a "stronger" prompt.
+- **F17 + F21** 🟢/🟡 — **the one real gap, fully characterized:** requests shaped as
+  "replace literal X→Y in a file" trip the Disengaged filter — driven by **file-edit framing
+  weight + the declarative agent** (plain/light = fine; heavy framing or the agent = Disengage),
+  independent of config/port/json wording or the numbers. Confirmed to bite real pi (3/3).
+  **No clean auto-fix** (reliable tool-calling needs the agent, which is what Disengages these);
+  the current fail-fast 502 is the right behavior. Workaround is request-level: "fix/implement"
+  asks that don't pre-state the literal replacement sail through.
+
+**Harness improvements** (code is cheap; these made the science possible): throttle-aware
+overnight orchestrator with strategy+task rotation and DISENGAGED-vs-THROTTLE classification
+(`scripts/bench/overnight-sweep.sh`); real-pi reliability harness (`scripts/bench/pi-reliability.sh`,
+`TASK=`); Disengage probes (`scripts/disengage-*probe.mjs`); fakeable-hallucination detector
+broadening (`fc92498`, unit-tested — correct insurance, though framing made it rarely needed).
+
+**Mistakes I caught mid-flight** (logged in Timeline): orchestrator wasted a 30-min backoff on
+Disengaged-misread-as-throttle (fixed, wake-2); task-position confound made edit-config look
+content-driven (fixed via task rotation, wake-4); wake-5 "task-content" reading of F17 corrected
+twice (→ agent path, → framing-weight) as probes refined it.
+
+**Open threads for you to steer** (none blocking): (a) a handler-level minimal-framing agent-less
+retry could be tested but looks not-worth-it (trades 502 for silent non-completion); (b) more
+F18 rounds for tighter n; (c) pi on multi-file/harder tasks. Commits: f603203→33c0e4e + the F21
+doc commit. Proxy still running on :4141; framing sweep stopped.
+
+---
+
 ## Operating constraints (self-reminders)
 - SEQUENTIAL only. One M365 thread at a time. Long cooldowns between thread-heavy runs.
 - Offline work (code, tests, analysis, docs) = no quota → run freely.

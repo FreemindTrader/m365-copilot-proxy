@@ -84,6 +84,33 @@ DeepLeo doesn't Disengage these prompts, but the agent has been the load-bearing
 lever. NEXT: probe agent-less+framing on edit-config — if it (a) doesn't Disengage AND
 (b) writes ```bash, then "on Disengaged, retry agent-less" is a viable proxy fix.
 
+### F21 — The substitution-Disengage is driven by FRAMING WEIGHT; no clean auto-mitigation 🟡
+**Refined mechanism (supersedes "agent-path" as sole cause).** The "replace literal X→Y"
+Disengage scales with the **weight of file-manipulation framing**, and the declarative agent
+stacks on top of it. Probe `scripts/disengage-agentless-probe.mjs`, edit-config task, magic tone:
+| condition | Disengaged | emitted tool fence |
+|---|---|---|
+| plain chat, NO framing (Phase A) | 0/2 | n/a (not asked to tool-call) |
+| agent-less (DeepLeo) + **minimal** framing | **0/3** | 1/3 (unreliable) |
+| agent-less (DeepLeo) + **baseline** (heavy) framing | **4/4** | 0/4 |
+| real proxy: agent + minimal framing (bench/pi) | **15/15 + 3/3** | — |
+So heavy file-edit framing ("create/overwrite with heredocs, edit in place with sed -i") on a
+literal-substitution task trips the filter even agent-less; the agent pushes even *minimal*
+framing over the edge. Two independent contributors (framing weight, agent) stack.
+**Mitigation verdict: no clean automatic fix (a real tension).** Reliable tool-calling needs
+the agent (or heavy framing) — F12/F19 — but both of those are exactly what Disengage a
+substitution task. The minimal-framing agent-less corner avoids the Disengage but tool-calls
+only ~1/3. So "retry agent-less" would trade a clear 502 for a likely SILENT non-completion —
+worse UX than the current fail-fast Disengaged error. **Recommendation: keep the fail-fast
+error (already shipped); do NOT auto-retry agent-less.** The practical workaround is at the
+request level: literal "change X→Y in <file>" top-level asks are the weak spot; "fix/implement"
+asks that don't pre-state the exact replacement sail through (fix-bug 10/10, create 100%).
+**Confidence.** Medium-high: the framing-weight gradient (0/3 minimal → 4/4 baseline agent-less)
+is clean; the "no clean fix" follows from the agent-needed-for-tools tension (well-established).
+**Probe caveat.** `oneTurn` did not actually attach the agent (control showed DeepLeo origin);
+agent-path facts here rest on the bench/pi (valid). A real handler-level agent-less retry test
+would confirm, but the tool-call-reliability tension already makes it not worth shipping.
+
 ### F18 — Framing shape modulates Disengage on a fragile task; aggressive framings backfire 🟡
 **Claim.** On the solvable tasks (`fix-bug`, `find-needle`) the framing strategy clearly
 affects the outcome, and the AGGRESSIVE/role-heavy framings Disengage MORE, not less. The
