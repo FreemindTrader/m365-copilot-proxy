@@ -166,6 +166,16 @@ export async function handleChatCompletion(
   const hasTools = body.tools && body.tools.length > 0 && body.tool_choice !== "none";
   const model = body.model;
 
+  // Claude (Claude_Sonnet tone) tool-calls reliably AGENT-LESS (probe: 4/4 ```bash,
+  // 0 disengage) and self-IDs as Claude Sonnet 4.5; the declarative agent would
+  // override the tone back to GPT-5 (H8.6) AND add jailbreak-shape signal. GPT-the-
+  // chat-model, by contrast, won't tool-call agent-less (0/4) so it still needs the
+  // agent. So: attach the tool agent EXCEPT on Claude models — there, stay agent-less
+  // to get real Claude doing tools via shell-routing (docs §10 F23). Force the old
+  // behavior with M365_FORCE_AGENT=1.
+  const isClaudeModel = /claude/i.test(model);
+  const useToolAgent = !!hasTools && (process.env.M365_FORCE_AGENT === "1" || !isClaudeModel);
+
   // Format message: full prompt on first turn, delta on follow-ups.
   // M365 is stateful — it remembers everything from prior turns,
   // so we only need to send new messages after the first turn.
@@ -217,7 +227,7 @@ export async function handleChatCompletion(
         // The agent overrides `tone` (forces GPT-5), so tool-less requests must
         // skip it to reach the model the tone selects (e.g. Claude). See
         // ModelSession.run / docs H8.6.
-        copilotStream = await session.run(text, model, opts.signal, !!hasTools);
+        copilotStream = await session.run(text, model, opts.signal, useToolAgent);
       } catch (err: any) {
         return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
       }

@@ -36,6 +36,37 @@ fenced shell-routing. Orchestrator `scripts/bench/overnight-sweep.sh` rotates BO
 strategy and task order per round (controls the §M caveat-4 order effect AND the
 task-position confound). Raw: `/tmp/m365-overnight.csv` + `scripts/bench/out/ov-*.json`.
 
+### F23 — CLAUDE-FOR-TOOLS works via agent-LESS shell-routing (overturns §8.9-8.11 "MCP-only") 🟢
+**Claim.** Claude Sonnet 4.5 will drive a real agentic coding loop through the proxy **without the
+declarative agent** — agent-less, the `Claude_Sonnet` tone routes to real Claude AND it emits tool
+fences reliably, so shell-routing executes them. This means Claude+tools needs **no** Copilot-Studio
+agent and **no** MCP/native-action path (§8.9 said "Claude usable for plain chat but NOT tools via
+our agent"; §8.10-8.11 parked Claude+tools behind the license-gated MCP path — **both now wrong**).
+**Why the agent blocked it:** the declarative agent (a) overrides the tone back to GPT-5 (H8.6) and
+(b) adds jailbreak-shape signal. GPT-the-chat-model needs the agent to tool-call at all; Claude does
+not — so dropping the agent for Claude is strictly better.
+**Evidence (June 25):**
+- Agent-less probe (`scripts/claude-tools-probe.mjs`, softened framing, n=4): `Claude_Sonnet`
+  self-IDs "Claude Sonnet 4.5", emits a tool fence **4/4**, disengaged 0/4. Control `magic` (GPT-5)
+  agent-less: tool fence **0/4** (narrates) — confirms GPT needs the agent, Claude doesn't.
+- End-to-end bench, `--model claude-sonnet --tasks fix-bug --repeat 3`: **2/3 SOLVED** (4 & 6 tool
+  calls/loop), 1 GAVE_UP_PROSE. The 1 miss is OURS not Claude's: Claude emitted a short preamble +
+  TWO ```bash fences in one turn, which the prose-document guard / mixed-output path swallowed
+  (tunable — Claude's style is "one sentence + multiple fences"; tune `isProseDocument` / one-call-
+  per-turn for it). So the real Claude solve-rate is ≥2/3 and rising once the parser is tuned.
+**Shipped (handler):** Claude models (`/claude/i`) now go **agent-less even with tools**
+(`useToolAgent`); GPT/magic still get the agent. Force old behavior with `M365_FORCE_AGENT=1`.
+**Why it matters (product):** a *stronger coding model* (Claude Sonnet 4.5) through the zero-cost
+proxy, and the agent-less path **structurally avoids the whole Disengage/jailbreak-classifier mess**
+(no agent instructions to scan) — F17/F22 mostly don't apply to the Claude path. Strong candidate
+for the DEFAULT coding model.
+**Confidence.** High that Claude tool-calls agent-less (4/4 probe + 2/3 end-to-end, real-Claude
+self-ID). Medium on the solve-rate (small n; parser-tuning will raise it; single account/day, and
+note the F22 temporal drift applies to disengage broadly).
+**Falsification / next.** Tune the multi-fence parsing and re-run claude-sonnet on the full bench +
+real pi (N≥5) vs gpt; if Claude ≥ GPT solve-rate, make claude-sonnet the default model. Check
+one-tool-per-turn handling of Claude's multi-fence turns.
+
 ### F17 — The AGENT path Disengages on "replace literal value X→Y in a file" requests 🟢
 **Claim (corrected — supersedes the wake-5 "task content" reading).** On the declarative-
 agent + tool-framing path, a request shaped like *"the file contains X, change it to Y"* /
