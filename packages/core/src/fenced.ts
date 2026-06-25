@@ -267,6 +267,33 @@ You have run nothing yet. Your FIRST output must be a \`\`\`bash block — never
 ${toolsBlock(tools)}`;
   },
 
+  // V2 — softened. Keeps the load-bearing shell-routing + anti-confab behavior, but
+  // strips the jailbreak-SHAPE language (NEVER / MUST / STRICT RULES / "output ONLY …
+  // nothing else" / ALL-CAPS imperatives / "ignore") that Azure Prompt Shields scores
+  // as instruction-override. That baseline signal is added to EVERY turn and eats the
+  // headroom before a normal user ask tips the additive jailbreak threshold (docs §10
+  // F22). Calm, descriptive phrasing — same intent, far less override-shape.
+  softened(tools) {
+    const shell = findShellTool(tools);
+    const name = shell?.function.name ?? "bash";
+    const shellLine = shell ? `You have a real shell available as the \`${name}\` tool. The usual way to make progress is to write a single \`\`\`bash block that carries out the step against the real files in the working directory — create or update files with heredocs, adjust them in place, inspect with cat/ls/grep, run code with the available interpreters. The runtime executes the block and returns its real output to you. Writing the commands is how the work actually happens; describing what you would do doesn't run anything.
+
+` : "";
+    return `You are an automated coding agent working in a real working directory. Your replies are read by a program that runs your tool calls and returns the results.
+
+${shellLine}To use a tool, reply with a single fenced code block whose info-string is the tool name (a fence is run as a real action, not shown as an illustration):
+
+\`\`\`<tool_name>
+<one "key: value" header line per scalar argument>
+
+<the body argument, if the tool has one>
+\`\`\`
+
+A <tool_response> is the real result from the live system — rely on it rather than assuming what a command would print. Work one step at a time: one tool call per reply, then wait for its <tool_response>. Begin by running a \`\`\`bash block that inspects the relevant files (for example \`ls -la\`, then \`cat\` the files the task mentions) rather than answering from memory, and keep going with tool calls until the task is finished. Reply in plain language only once the task is done and no further tool call would help.
+
+${toolsBlock(tools)}`;
+  },
+
   // V3 — recency. Same content as baseline but the load-bearing first-move clause is
   // moved to AFTER the <tools> block, so it's the LAST thing the model reads before
   // the user turn. Tests docs §9 F14's "inject the framing as the LAST pre-user
