@@ -69,6 +69,16 @@ driving the actual `pi` agent headless against the proxy on fix-bug, verifying e
 - fix-bug SOLVED 2 tools/3 msgs/51s. Validation r1: fix-bug SOLVED under minimal/terse/baseline (3/3).
 
 ## Timeline / entries
+- 2026-06-25 04:45 — wake 8 (fired on pi-run completion). **GOAL VALIDATED + F17 bites real pi.**
+  - **F20 graduated:** real `pi` fixes the bug end-to-end **10/10** (mean 107s, zero
+    confab/disengage/throttle). The ultimate goal — usable coding agent in pi — works. (commit next)
+  - **F17 confirmed on real pi:** edit-config "change port 8080" via actual pi → **3/3 DISENGAGED**,
+    pi shows the raw 502, file unchanged. Real product gap. Parameterized pi-reliability.sh (TASK=).
+  - **Mitigation feasibility = next experiment:** does agent-less (DeepLeo) + shell-routing framing
+    still emit ```bash? If yes → "on Disengaged, retry agent-less" rescues these. Need a probe that
+    builds the proxy framing (formatMessages) + sends agentId=null + checks for ```bash & no-disengage.
+    Also check for an existing M365_NO_AGENT-style toggle in core/handler before writing the probe.
+  - LIVE STATE: pi-run done; no bg job running now; proxy still up on :4141. Account zero-throttle ~5h.
 - 2026-06-25 04:11 — wake 7. **BIG wake: F17 corrected (major novel finding) + real-pi validated.**
   - F19 firmed: fizzbuzz 9/1, count-lines 9/1 SOLVED. Stopped the sweep (job done).
   - **F17 investigation (probes A/B/C):** plain chat (DeepLeo) does NOT Disengage the exact

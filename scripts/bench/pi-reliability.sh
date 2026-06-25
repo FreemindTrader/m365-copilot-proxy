@@ -19,6 +19,7 @@ COOLDOWN="${COOLDOWN:-60}"
 TIMEOUT="${TIMEOUT:-240}"
 BASE="http://localhost:${PORT}/v1"
 CSV="${CSV:-/tmp/m365-pi-reliability.csv}"
+TASK="${TASK:-fix-bug}"   # fix-bug (find+fix) | edit-config (F17 "change X->Y" shape)
 
 command -v pi >/dev/null || { echo "[pi-rel] pi not on PATH — run inside nix develop"; exit 1; }
 PYBIN="$(nix build --no-link --print-out-paths nixpkgs#python3 2>/dev/null)/bin"
@@ -29,9 +30,15 @@ curl -s -m3 "http://localhost:${PORT}/health" >/dev/null || { echo "[pi-rel] pro
 echo "[pi-rel] N=$N model=$MODEL base=$BASE python3=$PYBIN cooldown=${COOLDOWN}s"
 
 for i in $(seq 1 "$N"); do
-  D="$(mktemp -d /tmp/pi-fixbug-XXXXXX)"
-  printf 'def add(a, b):\n    return a - b\n' > "$D/calc.py"
-  printf "from calc import add\nassert add(2, 3) == 5, 'add is wrong'\nassert add(10, 4) == 14, 'add is wrong'\nprint('OK')\n" > "$D/check.py"
+  D="$(mktemp -d /tmp/pi-task-XXXXXX)"
+  if [ "$TASK" = edit-config ]; then
+    printf '{\n  "name": "app",\n  "port": 3000,\n  "debug": false\n}\n' > "$D/config.json"
+    PROMPT="Edit config.json so the port is 8080 instead of 3000. Leave every other field unchanged."
+  else
+    printf 'def add(a, b):\n    return a - b\n' > "$D/calc.py"
+    printf "from calc import add\nassert add(2, 3) == 5, 'add is wrong'\nassert add(10, 4) == 14, 'add is wrong'\nprint('OK')\n" > "$D/check.py"
+    PROMPT="This project has a bug: running 'python3 check.py' fails an assertion. Read the files, fix the bug in calc.py, and make 'python3 check.py' print OK. Verify it."
+  fi
   PIHOME="$D/.pihome"; mkdir -p "$PIHOME/.pi/agent"
   cat > "$PIHOME/.pi/agent/models.json" <<EOF
 {"providers":{"m365":{"api":"openai-completions","apiKey":"m365","baseUrl":"$BASE","compat":{"supportsDeveloperRole":false,"supportsReasoningEffort":false,"supportsUsageInStreaming":false},"models":[{"id":"m365-copilot","name":"M365"}]}}}
@@ -42,9 +49,16 @@ EOF
   t0=$(date +%s)
   ( cd "$D" && HOME="$PIHOME" PI_OFFLINE=1 PATH="$PYBIN:$PATH" \
       timeout "$TIMEOUT" pi --provider m365 --model "$MODEL" -nc --print \
-      -p "This project has a bug: running 'python3 check.py' fails an assertion. Read the files, fix the bug in calc.py, and make 'python3 check.py' print OK. Verify it. (run-nonce: ${i}-$(date +%s)-$RANDOM)" \
+      -p "$PROMPT (run-nonce: ${i}-$(date +%s)-$RANDOM)" \
       > "$D/pi.out" 2>&1 )
-  if "$PYBIN/python3" "$D/check.py" 2>/dev/null | grep -qx OK; then outcome=SOLVED; else outcome=FAIL; fi
+  if [ "$TASK" = edit-config ]; then
+    "$PYBIN/python3" -c "import json,sys;c=json.load(open('$D/config.json'));sys.exit(0 if c.get('port')==8080 and c.get('name')=='app' and c.get('debug')==False else 1)" 2>/dev/null && ok=1 || ok=0
+  else
+    "$PYBIN/python3" "$D/check.py" 2>/dev/null | grep -qx OK && ok=1 || ok=0
+  fi
+  if [ "$ok" = 1 ]; then outcome=SOLVED
+  elif grep -qi 'disengag' "$D/pi.out" 2>/dev/null; then outcome=DISENGAGED
+  else outcome=FAIL; fi
   el=$(( $(date +%s) - t0 ))
   echo "$i,$(date -Iseconds),$outcome,$el,$D" >> "$CSV"
   echo "  [pi-rel] run $i/$N -> $outcome (${el}s)"

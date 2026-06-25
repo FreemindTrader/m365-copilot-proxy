@@ -75,6 +75,14 @@ replace. **Live-agent implication (toward the goal):** real harnesses DO send "c
 Y" asks. Candidate proxy mitigation: on Disengaged, auto-retry once rephrasing a literal-
 substitution ask into a find-and-fix/transform framing (e.g. drop the explicit target), or
 route such turns agent-less (DeepLeo tolerated them). Worth a controlled test before shipping.
+**CONFIRMED bites real pi (June 25):** the exact "Edit config.json so the port is 8080…"
+task through the actual `pi` agent Disengaged **3/3** (`pi-reliability.sh TASK=edit-config`);
+pi surfaced the raw 502 and left the file unchanged — a hard user-facing failure, not a
+bench artifact. **Mitigation feasibility hinges on an untested question:** does agent-less
+(DeepLeo) + the fenced shell-routing framing still emit ```bash tool calls? Phase A proved
+DeepLeo doesn't Disengage these prompts, but the agent has been the load-bearing tool-call
+lever. NEXT: probe agent-less+framing on edit-config — if it (a) doesn't Disengage AND
+(b) writes ```bash, then "on Disengaged, retry agent-less" is a viable proxy fix.
 
 ### F18 — Framing shape modulates Disengage on a fragile task; aggressive framings backfire 🟡
 **Claim.** On the solvable tasks (`fix-bug`, `find-needle`) the framing strategy clearly
@@ -127,6 +135,26 @@ fails to force a real call. Watch count-lines as n grows; re-test if framing cha
 **Caveat.** `persona` still Disengages even fizzbuzz — consistent with F18 (aggressive
 framing backfires). The detector broadening (fc92498) remains correct unit-tested insurance
 but is **unobserved live** precisely because the framing prevents the failure upstream.
+
+### F20 — Real `pi` drives the proxy to fix a bug end-to-end: 10/10 (the goal, validated) 🟢
+**Claim.** The ULTIMATE goal — a usable coding agent in pi backed by M365 Copilot — works
+reliably, not just in the bench's hand-rolled loop. The actual `pi` coding agent (0.78.1,
+headless `--print`) pointed at the local proxy fixes a real bug (calc.py `a-b`→`a+b`,
+verified by `python3 check.py` printing OK) **10/10 independent runs**.
+**Evidence.** `scripts/bench/pi-reliability.sh` N=10, per-run nonce → fresh M365 conversation
+each run, real `pi` agent loop on the HOST (python3 from nixpkgs), proxy on :4141, `magic`
+tone + agent + fenced shell-routing. **10/10 SOLVED, mean 107s** (range 64–162s). Zero
+confabulation/disengage/throttle. CSV `/tmp/m365-pi-reliability.csv`. This answers F14's
+"run fix-bug through pi ~10× to pin the comply-rate" — comply-rate = 100% on fix-bug.
+**Confidence.** High for fix-bug end-to-end through real pi (10/10, independent convs, on a
+rested account). This is the principle-#3 validation: a real harness, not only the bench.
+**Caveats / boundaries.** (a) fix-bug is the *canonical reliable* task — 100% here does NOT
+generalize to all tasks: F17 shows "change X→Y in a file" asks Disengage on the agent path,
+and F18 shows aggressive framings hurt. The honest claim is "real pi reliably completes a
+find-and-fix coding task," the core loop — not "every request succeeds." (b) Single account/
+tone/day. (c) pi runs model commands on the host (benign task, temp dir).
+**Next.** Test real pi on (i) a "change X→Y" task (does F17's agent-Disengage actually bite
+pi usage?), (ii) a multi-file/harder task, (iii) under pi's own system prompt vs the bench's.
 
 ---
 
