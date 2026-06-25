@@ -86,6 +86,30 @@ no throttle observed (so not a late-variant penalty).
 **Falsification.** More rounds; if baseline/fewshot fall below the aggressive variants on
 solvable tasks, revisit. Probe whether `fewshot` meaningfully beats `baseline` at higher n.
 
+### F19 — the §8.12 fakeable-task hallucination is largely CLOSED (by framing, not the detector) 🟢
+**Claim.** The §8.12 "remaining gap" — *fakeable* create-from-scratch tasks (fizzbuzz,
+count-lines) hallucinate "created and executed it" with 0 tools (~0/5) — is now mostly
+gone. On the rested account, fenced shell-routing makes the model emit a real ```bash
+block on **turn 1** and actually write+run the file.
+**Evidence.** Overnight sweep, fakeable tasks: **fizzbuzz 9/10 SOLVED** (only `persona`
+Disengaged), **count-lines 3/3 SOLVED** (n growing). SOLVED ⟺ real in-sandbox execution
+(the bench verifier runs the file). Crucially, almost every solve is **tools=1, msgs=2** —
+i.e. the model acted on turn 1; there was no hallucination to catch.
+**Mechanism — framing, with the detector as backstop.** The improvement is the shell-first
+framing (F12/F14), not the hallucination detector: across the night the
+`looksLikeHallucinatedCompletion` broadening (commit fc92498) fired **0×** (no occasion —
+the model doesn't shortcut anymore), while the pre-existing **confab-retry fired 2× and
+SALVAGED both** ("Confabulation detected → forcing retry → hasToolCalls=true"), validating
+F16's confab-retry **live for the first time**. So: framing closed the gap; the detectors
+are insurance that rarely triggers.
+**Confidence.** High on the direction (fizzbuzz 9/10 is a large swing from ~0/5). Medium on
+exact rates (count-lines n still growing; single account/tone).
+**Falsification.** A fakeable task that hallucinates "done" with 0 tools AND the detector
+fails to force a real call. Watch count-lines as n grows; re-test if framing changes.
+**Caveat.** `persona` still Disengages even fizzbuzz — consistent with F18 (aggressive
+framing backfires). The detector broadening (fc92498) remains correct unit-tested insurance
+but is **unobserved live** precisely because the framing prevents the failure upstream.
+
 ---
 
 ## 9. June 14 2026 — agentic tool-use SOLVED via shell-routing (bench 0/5 → real multi-turn loops)

@@ -60,6 +60,22 @@ A throttle-aware overnight framing A/B sweep is RUNNING in the background.
 - fix-bug SOLVED 2 tools/3 msgs/51s. Validation r1: fix-bug SOLVED under minimal/terse/baseline (3/3).
 
 ## Timeline / entries
+- 2026-06-25 03:03 — wake 6. **Detector/fakeable validation = strong. F19 graduated.**
+  - fizzbuzz 9/10 SOLVED (only persona DIS), count-lines 3/3 SOLVED — vs §8.12 baseline ~0/5.
+    Almost all tools=1,msgs=2 → model acts on TURN 1 (no hallucination). So the framing closed
+    the gap; detector is backstop. Confab-retry fired 2× and SALVAGED both (F16 validated live);
+    my fc92498 hallucination broadening fired 0× (no occasion — framing prevents it upstream).
+  - **Graduated F19** to hypotheses.md §10.
+  - **pi-run prep:** `pi --print/-p` = headless one-shot (good). BUT **python3 MISSING in nix shell**
+    → a host pi fix-bug run fails on infra (the F14 snag). Fix later via `nix shell nixpkgs#python3`
+    wrapping pi, OR use a bash-only pi task (count-lines uses bash/wc, host-OK).
+  - **NEXT (decided):** wind down the bench sweep (it's confirming knowns now) and pivot to the
+    **F17 edit-config Disengage probe** — highest RE value, cheap, no plumbing. Probe plan: vary the
+    prompt to isolate the trigger — (a) reproduce original; (b) same edit, NO tools (plain chat);
+    (c) reworded dropping "config"/"port"/".json" (e.g. "in data.txt change 3000 to 8080");
+    (d) framed as a bugfix. Use scripts/_probe-chat.mjs (single-turn, reports messageType). n≈2-3
+    each, SEQUENTIAL (stop the sweep first — one thread at a time). Goal: is it the config/port
+    wording, the filename, or the tool-framing+config combo that trips Disengaged?
 - 2026-06-25 02:28 — wake 5. **Confound resolved + 2 findings graduated + sweep pivoted to goal.**
   - edit-config Disengaged 15/15 across all framings AND now in round-position 2 (not just last)
     → CONFIRMED task-content, not position. **Graduated F17** to hypotheses.md §10.
