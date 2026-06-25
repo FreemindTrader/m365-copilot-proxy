@@ -215,6 +215,11 @@ or the combo (A) tool-calling. Re-test if Microsoft retunes Prompt Shields.
 - Always-enforced (can't disable) prompt-injection defense: learn.microsoft.com/microsoft-365/copilot/harmful-content-protection-copilot-chat
 - NOTE: "DEA / dea_violation / disengagement-eligibility" has ZERO external corroboration — likely internal-only; our `x_m365_dea_score` naming is our own inference, keep that caveat.
 
+**June 25 follow-up tangent — `dea_violation` does NOT gauge the disengage (hunch falsified) + softened mitigation rate:**
+- Hoped `x_m365_dea_score` (the bot-message classifier score) would be a continuous dial predicting the disengage threshold. It is NOT: a Disengaged turn returns **`dea=none`** (the input-side Prompt-Shields gate fires before any output bot-message exists to score), and PASSING turns always read low (~1e-8–4e-8) regardless of how near they were to tipping. So our exposed `x_m365_dea_score` is the OUTPUT content score; the disengage is a SEPARATE input-side gate. They're both shape-driven (loosely correlated) but dea is unmeasurable at/after the threshold → useless as a predictive dial. Don't trust the `dea`-name as a disengage predictor.
+- `dea` is **stable within a session** (~4.0e-8 clustered over n=12) but **shifts across sessions** (target-only 1.9e-8 vs 2+2 2.4e-9 earlier) → an account/session baseline component (matches the "feels state-dependent" theme).
+- **Softened mitigation RATE:** `softened` framing drops the worst-case combo ("X instead of Y. Leave every other field unchanged.") from ~100% disengage (minimal) to **~4%** (1 disengage across ~26 softened combo runs: titration 1/1 once, else 0/5 + 5/5 + 12/12 + pi 0/4). Strong but not perfect → the residual ~4% is the case for ALSO adding the rephrase/retry-on-Disengage (strip override-shaped clauses, fresh conversation). Normal phrasings: 0 disengage observed under softened.
+
 ### F18 — Framing shape modulates Disengage on a fragile task; aggressive framings backfire 🟡
 **Claim.** On the solvable tasks (`fix-bug`, `find-needle`) the framing strategy clearly
 affects the outcome, and the AGGRESSIVE/role-heavy framings Disengage MORE, not less. The
