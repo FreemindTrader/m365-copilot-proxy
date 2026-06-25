@@ -132,6 +132,22 @@ framing, 0/4 on baseline-which-Disengages). Next experiment: sweep agent-less De
 one that reliably elicits ```bash WITHOUT the heavy file-edit verbs that Disengage — if found,
 "drop the agent for tools" fixes F17 and may also unlock Claude-for-tools (the agent forces GPT).
 
+**June 25 in-GUI-context emulation — it's the PAYLOAD (agent), not our connection (airtight).**
+`scripts/m365-gui-emulate.mjs`: logged into the real GUI, then from the PAGE opened a fresh WS to
+the same Chathub endpoint reusing the GUI's own token + origin + query params, and sent OUR proxy
+payload (threadLevelGptId=our agent + minimal shell framing + the "edit config.json port 8080"
+task) — only the message payload differs from the GUI. Result: **DISENGAGED** (bot text = our prompt
+echoed). So with the GUI's exact connection/token/headers/WS-params held constant, our payload still
+Disengages → the trigger is conclusively the **agent attachment on a substitution task**, NOT our
+proxy's token audience, headers, WS params, reconnect behavior, or optionsSets. (Also confirmed:
+rapid reconnect/retry does not recover — edit-config Disengaged 26/26 across all attempts; the turn
+ends with a clean type:3, so a reconnect just re-disengages. The GUI itself uses one WS, no reconnect
+— it never Disengages because it sends no agent.) Fix path unchanged and now ironclad: agent-less
+reliable shell-routing is the only way out.
+**Bonus:** our agents (`m365-tool-agent-<hash>`, "Tool-Calling Coding Agent") appear as selectable
+Agents in the real M365 GUI sidebar, and our proxy conversations show in the chat list (named
+`<conversation_id>…` from our first-message tag) — the agent path can be exercised by hand in the GUI.
+
 ### F18 — Framing shape modulates Disengage on a fragile task; aggressive framings backfire 🟡
 **Claim.** On the solvable tasks (`fix-bug`, `find-needle`) the framing strategy clearly
 affects the outcome, and the AGGRESSIVE/role-heavy framings Disengage MORE, not less. The
