@@ -26,8 +26,13 @@ Goal: usable coding agent in pi/openclaw via the prompt-emulated shell-routing p
 
 ## LIVE STATE (read this first on wake-up)
 A throttle-aware overnight framing A/B sweep is RUNNING in the background.
-- **Current bg sweep task:** `b8kcmtnfm` (relaunched wake-4 with task-order rotation).
-- **Orchestrator:** `scripts/bench/overnight-sweep.sh` (now rotates BOTH strategy and task order per round).
+- **Current bg sweep task:** `brgoh98x5` (relaunched wake-5).
+- **Grid NOW:** `TASKS="fix-bug fizzbuzz count-lines"` × 10 strategies. Dropped edit-config
+  (conclusive: 100% Disengaged, F17) + find-needle (DIS story told). Added fakeable tasks
+  fizzbuzz+count-lines to **validate the hallucination detector (fc92498/F16) LIVE** — on a
+  fakeable task, SOLVED ⟺ the model REALLY wrote+ran (bench verifier runs in-sandbox), so
+  SOLVED-rate = how often detector+framing force real action instead of a hallucinated "done".
+- **Orchestrator:** `scripts/bench/overnight-sweep.sh` (rotates BOTH strategy and task order per round).
 - **Kill safely:** do NOT `pkill -f overnight-sweep` (matches your own zsh cmdline → exit 144).
   Kill by PID filtered to bash: `for p in $(pgrep -f overnight-sweep); do [ "$(cat /proc/$p/comm)" = bash ] && kill $p; done`.
 - **Grid:** 10 framing strategies × 3 unfakeable tasks (fix-bug, find-needle, edit-config),
@@ -55,6 +60,16 @@ A throttle-aware overnight framing A/B sweep is RUNNING in the background.
 - fix-bug SOLVED 2 tools/3 msgs/51s. Validation r1: fix-bug SOLVED under minimal/terse/baseline (3/3).
 
 ## Timeline / entries
+- 2026-06-25 02:28 — wake 5. **Confound resolved + 2 findings graduated + sweep pivoted to goal.**
+  - edit-config Disengaged 15/15 across all framings AND now in round-position 2 (not just last)
+    → CONFIRMED task-content, not position. **Graduated F17** to hypotheses.md §10.
+  - Framing on solvable tasks (n=4–5/strat): fewshot 100%, baseline 100% (shipped default!),
+    down to proof_demand 20%, persona 0%. Aggressive framings backfire (more Disengage).
+    **Graduated F18** to hypotheses.md §10. Takeaway: keep the shipped baseline; don't go heavier.
+  - **Pivoted sweep** (bg brgoh98x5): TASKS="fix-bug fizzbuzz count-lines" — dropped the two
+    conclusive tasks, added fakeables to validate the hallucination detector LIVE (the F16
+    "not yet validated live" gap). First cell fizzbuzz/minimal SOLVED (real exec).
+  - Account STILL zero throttle after ~3.5h / ~60+ threads — 2-week rest holds; F13 not triggered.
 - 2026-06-25 01:54 — wake 4. **edit-config Disengaged 8/8 across ALL framings** (incl baseline/
   terse/reply_tool/fewshot). BUT discovered a **confound in my own sweep**: tasks ran in FIXED
   order (fix-bug→find-needle→edit-config), so edit-config was ALWAYS last → task-content vs

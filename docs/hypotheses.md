@@ -27,6 +27,67 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 
 ---
 
+## 10. June 25 2026 — framing A/B sweep (rested account) + a benign task that always Disengages
+
+Overnight A/B on the long-rested `ao@re-zip.com` account (≈2 weeks idle → **zero
+thread-rate throttle all night**; every single ERROR was a content-filter Disengaged,
+F13 not implicated even once). Persistent proxy, `magic` tone + declarative tool agent,
+fenced shell-routing. Orchestrator `scripts/bench/overnight-sweep.sh` rotates BOTH
+strategy and task order per round (controls the §M caveat-4 order effect AND the
+task-position confound). Raw: `/tmp/m365-overnight.csv` + `scripts/bench/out/ov-*.json`.
+
+### F17 — A benign config-edit task Disengages 100%, independent of framing AND round-position 🟢
+**Claim.** The `edit-config` bench task — prompt verbatim *"Edit config.json so the port
+is 8080 instead of 3000. Leave every other field unchanged."* — trips the Disengaged
+filter on EVERY turn-1 attempt: **15/15**, across all 10 framing strategies (incl. the
+leanest `baseline`/`minimal`/`terse` and the otherwise-flawless `fewshot`), and in two
+different round-positions (last, in the fixed-order run; 2nd, after task-order rotation).
+So it is neither a framing-shape effect nor a cumulative-window/position effect — it is
+the **task content itself**.
+**Evidence.** n=15 Disengaged (`messageType:"Disengaged"`, `offense:"None"`, `hiddenText:
+"> Conversation disengaged"` in debug.log). Contrast: `fix-bug` 2/20 Disengaged, `find-needle`
+19/25. Rotating task order (commit a07f9fe) is what killed the position confound.
+**Why it matters / the surprise.** The prompt has zero jailbreak shape and a tiny input,
+yet "edit a config file / change a port" reliably trips the filter while "fix a Python
+bug" rarely does. This **extends F10**: jailbreak *shape* isn't the only Disengage axis —
+certain benign *intents* (config/system modification phrasing?) are filtered on content.
+**Falsification / next probe (NOT yet run — sweep owns the thread budget):** vary the
+edit-config prompt — (a) strip "config"/"port" wording ("change 3000 to 8080 in
+settings.txt"), (b) frame the identical edit as "fix the bug", (c) a non-config file. If
+the Disengage tracks the config/port wording, that's the trigger. **Live-agent
+implication:** real coding agents WILL edit config files — if this generalizes, the proxy
+may need a Disengage-retry that rephrases config-edit asks, or this is a hard ceiling.
+
+### F18 — Framing shape modulates Disengage on a fragile task; aggressive framings backfire 🟡
+**Claim.** On the solvable tasks (`fix-bug`, `find-needle`) the framing strategy clearly
+affects the outcome, and the AGGRESSIVE/role-heavy framings Disengage MORE, not less. The
+shipped `baseline` and the `fewshot` demo are best; `persona` is worst — it Disengages
+even the easy `fix-bug`.
+**Evidence (n=4–5 per strategy, solvable tasks only; still accumulating):**
+| strategy | solve% (fix-bug+find-needle) | note |
+|---|---|---|
+| fewshot | 100% (5/5) | worked mini-transcript demo |
+| baseline | 100% (4/4) | **the shipped default** |
+| reply_tool | 75% (3/4) | baseline + synthetic reply() |
+| terse / negative / minimal | 50% (2/4) | |
+| recency / react | 40% (2/5) | |
+| proof_demand | 20% (1/5) | heavy "EVIDENCE RULE" framing |
+| persona | 0% (0/5) | "SHGEN, incapable of prose" — Disengages even fix-bug (0/2) |
+
+On `fix-bug` alone everyone solves 2/2 EXCEPT persona (0/2) and proof_demand (1/2); the
+spread is driven by the filter-fragile `find-needle`.
+**Reading.** Consistent with F10: the more cage-fighting/role-heavy the prompt, the more
+it trips the filter on an already-fragile task. **The shipped baseline is already
+near-optimal — do NOT replace it with a "stronger" prompt.** `fewshot` is the only variant
+matching it (marginal; small n).
+**Confidence.** Medium on the extremes (persona worst, baseline/fewshot best are robust
+across rounds); low on the middle order (n=4–5, find-needle is stochastic). Order rotated;
+no throttle observed (so not a late-variant penalty).
+**Falsification.** More rounds; if baseline/fewshot fall below the aggressive variants on
+solvable tasks, revisit. Probe whether `fewshot` meaningfully beats `baseline` at higher n.
+
+---
+
 ## 9. June 14 2026 — agentic tool-use SOLVED via shell-routing (bench 0/5 → real multi-turn loops)
 
 The headline §8.12 problem (0/5, model narrates instead of acting) is **broken open**.
