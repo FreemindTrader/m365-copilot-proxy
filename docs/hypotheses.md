@@ -67,6 +67,21 @@ note the F22 temporal drift applies to disengage broadly).
 real pi (N≥5) vs gpt; if Claude ≥ GPT solve-rate, make claude-sonnet the default model. Check
 one-tool-per-turn handling of Claude's multi-fence turns.
 
+**Head-to-head verdict (June 25, fix-bug):** GPT+agent (`m365-copilot`) **4/5 (80%)** vs Claude
+agent-less **~50-67%** (claude-tools 2/3, claude-fixed 2/4). So **Claude is NOT default-ready yet**
+— end-to-end it currently *underperforms* GPT, dragged by INTERMITTENT malformed/run-on fences
+(e.g. ```` ```bash\nls -la\n```bash\nls -la && cat… ```` — fences mashed/under-closed) that the
+strict fence parser drops → GAVE_UP_PROSE. It is NOT a capability gap: clean turns solve fine
+(verified clean ```` ```bash ```` 4/4 on demand; multiple full SOLVED loops with heredoc fixes), and
+the prose-doc-guard misfire is already fixed (`isProseDocument` now keys on markdown-headers/≥300
+prose/≥4 fences, not prose≥120 — unit-tested for Claude's preamble style). **Decision:** keep
+GPT+agent as the DEFAULT; ship Claude as the `claude-sonnet` model (agent-less, working, ~57%).
+**Next to make Claude default-worthy:** capture an exact malformed-fence sample (couldn't reproduce
+on demand — it's intermittent) and harden `parseFencedToolCalls` for it (command-on-same-line-as-
+```lang, missing final close, ```lang implicit-close) with unit tests against the real bytes, THEN
+re-bench. Don't harden blind. Bonus reminder: the Claude path needs NO agent → structurally immune
+to the F17/F22 Disengage class, so it's strategically worth finishing.
+
 ### F17 — The AGENT path Disengages on "replace literal value X→Y in a file" requests 🟢
 **Claim (corrected — supersedes the wake-5 "task content" reading).** On the declarative-
 agent + tool-framing path, a request shaped like *"the file contains X, change it to Y"* /
