@@ -30,3 +30,5 @@ scripts/create-full-bot-out/
 scripts/code-interp-out/
 scripts/bench/out/
 scripts/throttle-out/
+scripts/gui-capture-out/
+scripts/*-out/

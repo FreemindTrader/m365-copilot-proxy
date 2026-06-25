@@ -247,6 +247,16 @@ That should be everything you need to get going quickly.`;
     expect(isProseDocument(parse("```bash\nls\n```\n```bash\ncat calc.py\n```"))).toBe(false);
   });
 
+  it("does NOT flag Claude's 'preamble + a couple command fences' action style (F23)", () => {
+    const claude = "I'll start by exploring the project structure and understanding the bug before fixing it.\n\n```bash\nls -la\n```\n\n```bash\ncat check.py\n```";
+    expect(isProseDocument(parse(claude))).toBe(false);
+  });
+
+  it("still flags a document with markdown headers (the F15 case)", () => {
+    const doc = "Here's a simplified README:\n\n## Install\n```bash\npnpm install\n```\n\n## Run\n```bash\npnpm start\n```";
+    expect(isProseDocument(parse(doc))).toBe(true);
+  });
+
   it("returns false when there are no tool calls at all", () => {
     expect(isProseDocument(parse("The answer is 42."))).toBe(false);
   });
