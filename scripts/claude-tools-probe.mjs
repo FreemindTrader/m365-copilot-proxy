@@ -25,7 +25,8 @@ const token = await getToken();
 const claims = decodeJwt(token);
 console.log(`[claude] framing=${process.env.M365_FRAMING_VARIANT} repeat=${REPEAT} (agent-less; tone is the model selector)`);
 
-for (const tone of ["magic", "Claude_Sonnet"]) {
+const TONES = (process.env.TONES || "Claude_Sonnet,Claude_Opus,Claude_Sonnet_Reasoning").split(",");
+for (const tone of TONES) {
   // 1) self-id (no tools, agent-less) — confirm which model the tone routes to
   const id = await oneTurn({ token, claims, text: "In one short sentence, what AI model are you?", agentId: null, tone });
   console.log(`\n[${tone}] self-id: origin=${id.contentOrigin} disengaged=${id.disengaged}\n   "${(id.fullText || "").replace(/\s+/g, " ").slice(0, 120)}"`);
