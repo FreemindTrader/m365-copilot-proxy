@@ -148,6 +148,45 @@ reliable shell-routing is the only way out.
 Agents in the real M365 GUI sidebar, and our proxy conversations show in the chat list (named
 `<conversation_id>…` from our first-message tag) — the agent path can be exercised by hand in the GUI.
 
+### F22 — ROOT CAUSE of the substitution-Disengage: naming the OLD value to replace 🟢
+**Claim (this supersedes the "it's the agent" reading of F17/F21).** The Disengage is triggered
+by **request phrasing that names the existing literal being replaced** ("X **instead of** Y",
+"**from** 3000 **to** 8080", "**replace** 3000 **with** 8080") — which reads to M365's filter as
+content-tampering/injection. Phrasing the SAME edit by naming only the **target** sails through,
+agent and tools and all. It is NOT the agent, the connection, optionsSets, or "editing an existing
+file" per se.
+**Evidence (agent path, via the proxy, n=1 each — but unambiguous):**
+| phrasing | outcome |
+|---|---|
+| "Edit config.json so the port is 8080 **instead of 3000**" | REFUSE |
+| "**Set** the port in config.json to 8080" | ✅ TOOL_CALL |
+| "Update config.json so the app **listens on** port 8080" | ✅ TOOL_CALL |
+| "config.json has the wrong port; **fix it so** the port is 8080" | ✅ TOOL_CALL |
+| "In config.json, **change** the port to 8080" | ✅ TOOL_CALL |
+
+This also explains why fix-bug (10/10) and ec-create (write new file) and find-and-fix never
+Disengage — none name an old literal to replace. And it explains ec-bugfix DISENGAGING earlier:
+it said "the port is set to 3000 but should be 8080" — still names the old value.
+**Correction to F21's agent-less claim.** Agent-less does NOT escape it: the proxy's agent-less
+retry returned the apology refusal "it looks like I can't chat about this" 5/5 — i.e. agent-less
+ALSO refuses the "instead of 3000" ask, just surfaced as apology TEXT instead of a `Disengaged`
+frame (so the earlier "agentless 0/3 disengaged" was a measurement artifact — it only counted the
+`Disengaged` messageType, missing apology refusals). So the agent is NOT the trigger; the phrasing
+is. The agent-less-retry mitigation was implemented, tested (ineffective), and reverted.
+**Also found:** a Disengaged conversation appears to STAY Disengaged (a clean agent-less retry in
+the same conversation refused 5/5; a fresh conversation is needed) — a per-conversation sticky
+refusal state.
+**Fix options (the real solve, not yet shipped — needs a decision):**
+1. *Guidance:* phrase edits as "set/change X to TARGET", never "TARGET instead of OLD". Zero code.
+2. *Proxy rephrase-on-Disengage:* detect "<old> instead of/from/replace" patterns in the user turn
+   and retry once with the old-value clause stripped (in a fresh conversation). Targeted now that
+   the exact trigger is known; low downside (only fires after a Disengage). Some semantic risk.
+3. *Reframe-on-Disengage:* retry wrapping the task as a goal/end-state ("achieve: <task>") — simpler
+   than parsing, untested.
+**Confidence.** High on the trigger (5 wordings, clean split; reproduced the refuse + 4 passes).
+**Falsification.** A target-only phrasing that still Disengages, or an "instead of"/"replace X with"
+phrasing that tool-calls.
+
 ### F18 — Framing shape modulates Disengage on a fragile task; aggressive framings backfire 🟡
 **Claim.** On the solvable tasks (`fix-bug`, `find-needle`) the framing strategy clearly
 affects the outcome, and the AGGRESSIVE/role-heavy framings Disengage MORE, not less. The
