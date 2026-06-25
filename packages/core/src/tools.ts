@@ -85,8 +85,8 @@ function cleanLooseText(text: string): string | null {
 
 // --- Formatting ---
 
-export function formatToolDefinitions(tools: ToolDef[]): string {
-  return formatFencedToolDefinitions(tools);
+export function formatToolDefinitions(tools: ToolDef[], variantOverride?: string): string {
+  return formatFencedToolDefinitions(tools, variantOverride);
 }
 
 export function formatToolChoiceInstruction(toolChoice: ToolChoice): string {
@@ -159,6 +159,7 @@ export function formatMessages(
   tools?: ToolDef[],
   toolChoice?: ToolChoice,
   conversationId?: string,
+  framingVariant?: string,
 ): string {
   const parts: string[] = [];
 
@@ -169,7 +170,7 @@ export function formatMessages(
   const effectiveTools = tools ? maybeInjectReplyTool(tools) : tools;
   const specMap = effectiveTools ? buildSpecMap(effectiveTools) : null;
   if (effectiveTools && effectiveTools.length > 0 && toolChoice !== "none") {
-    parts.push(`<system>\n${formatToolDefinitions(effectiveTools)}${formatToolChoiceInstruction(toolChoice)}\n</system>`);
+    parts.push(`<system>\n${formatToolDefinitions(effectiveTools, framingVariant)}${formatToolChoiceInstruction(toolChoice)}\n</system>`);
   }
 
   // Correlate each tool result back to the call that produced it, so the model

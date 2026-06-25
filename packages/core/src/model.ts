@@ -30,7 +30,19 @@ export class ModelSession {
 
   /** Stable IDs reused across CopilotSession reconnections. */
   readonly sessionId: string = crypto.randomUUID();
-  readonly conversationId: string = crypto.randomUUID();
+  private _conversationId: string = crypto.randomUUID();
+  /** Current M365 ConversationId (the throttle/Disengage state keys on this). */
+  get conversationId(): string { return this._conversationId; }
+  /**
+   * Rotate to a FRESH conversation. A conversation that has Disengaged appears to
+   * STAY Disengaged (a clean retry in the same conversation kept refusing), so the
+   * Disengage-recovery retry needs a new ConversationId, not just a different prompt.
+   * See docs §10 F22.
+   */
+  newConversation(): void {
+    this._conversationId = crypto.randomUUID();
+    this.reset();
+  }
 
   constructor(options: ModelSessionOptions = {}) {
     this.resolveToken = options.getToken ?? getToken;

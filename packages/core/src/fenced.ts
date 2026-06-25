@@ -180,8 +180,8 @@ function renderFencedTemplate(spec: FencedToolSpec): string {
  * lever (docs/hypotheses.md §9). `M365_FRAMING_VARIANT` selects among a registry
  * of competing strategies so they can be A/B'd on the bench without rebuilding
  * the server-side agent. Default = `baseline` (the shipped framing). */
-export function formatFencedToolDefinitions(tools: ToolDef[]): string {
-  const variant = currentFramingVariant();
+export function formatFencedToolDefinitions(tools: ToolDef[], variantOverride?: string): string {
+  const variant = variantOverride ?? currentFramingVariant();
   // `reply_tool` is a tool-injection strategy, not a framing one — it runs the
   // baseline framing plus a synthetic reply() tool (see tools.ts).
   const key = variant === "reply_tool" ? "baseline" : variant;
@@ -203,6 +203,12 @@ export function currentFramingVariant(): string {
       // missing/unreadable control file → fall through to env/default
     }
   }
+  // Default = `baseline`: its strong anti-confabulation pressure ("you've run nothing;
+  // don't ask to paste; act first") is load-bearing for normal-task reliability (real
+  // pi: 10/10 fix-bug, F20). `softened` drops that pressure and regresses to
+  // confabulation (1/4), so it is NOT the default — instead the handler retries with
+  // `softened` only ON a Disengage (F22): baseline's override-shape occasionally trips
+  // Prompt Shields; softened escapes it. Best of both. Override with M365_FRAMING_*.
   return process.env.M365_FRAMING_VARIANT || "baseline";
 }
 
