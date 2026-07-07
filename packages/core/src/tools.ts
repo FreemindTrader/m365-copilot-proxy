@@ -53,11 +53,12 @@ export type ToolChoice =
 
 // --- Tool call format ---
 
-// The model outputs JSON tool calls; we parse them from the raw text.
-// The agent system prompt tells the model to use {"tool": "...", "arguments": {...}}
+// Fenced Markdown is the format we instruct and primarily parse (see fenced.ts).
+// The two regexes below are tolerance-only FALLBACKS: M365 occasionally ignores the
+// fenced contract and emits a stray `{"tool":...,"arguments":{...}}` object, or wraps
+// it in a legacy ```tool_call fence. We parse those if they show up but never teach
+// the model to produce them — the JSON format scored 0/5 and was removed (§9).
 const TOOL_CALL_REGEX = /\{\s*"tool"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[\s\S]*?\}\s*\}/g;
-
-// Legacy fence format — still supported for parsing
 const FENCED_TOOL_CALL_REGEX = /```tool_call\s*\n(\{[\s\S]*?\})\s*\n\s*```/g;
 
 // M365 invents bookkeeping objects ({"confidence": 0.5}) and wraps its answer in

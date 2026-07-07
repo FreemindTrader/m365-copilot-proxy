@@ -6,10 +6,6 @@ export const SignalRHandshakeResponse = z.object({
   error: z.string().optional(),
 });
 
-export const SignalRBase = z.object({
-  type: z.number(),
-});
-
 // --- M365 Copilot Response Schemas ---
 
 export const ThrottlingInfo = z.object({
@@ -90,22 +86,6 @@ export const ThrottlingUpdate = z.object({
   throttling: ThrottlingInfo,
 });
 
-// SignalR type 1 "update" target
-export const UpdateFrame = z.object({
-  type: z.literal(1),
-  target: z.literal("update"),
-  arguments: z.array(
-    z.union([DeltaUpdate, MessageUpdate, ThrottlingUpdate, z.record(z.any())]),
-  ),
-});
-
-// SignalR type 2 - stream item (completion with conversation state)
-export const StreamItemFrame = z.object({
-  type: z.literal(2),
-  invocationId: z.string(),
-  item: z.any(),
-});
-
 // SignalR type 3 - completion
 export const CompletionFrame = z.object({
   type: z.literal(3),
@@ -114,25 +94,11 @@ export const CompletionFrame = z.object({
   result: z.any().optional(),
 });
 
-// SignalR type 6 - ping
-export const PingFrame = z.object({
-  type: z.literal(6),
-});
-
 // SignalR type 7 - close
 export const CloseFrame = z.object({
   type: z.literal(7),
   error: z.string().optional(),
 });
-
-// Union of all server frames
-export const ServerFrame = z.union([
-  UpdateFrame,
-  StreamItemFrame,
-  CompletionFrame,
-  PingFrame,
-  CloseFrame,
-]);
 
 // --- JWT Claims ---
 

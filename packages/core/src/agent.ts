@@ -172,7 +172,7 @@ async function listBots(
 async function createBot(
   envUrl: string,
   token: string,
-): Promise<{ botId: string; componentId: string }> {
+): Promise<{ botId: string }> {
   const body = {
     botComponentChanges: [
       {
@@ -263,88 +263,7 @@ async function createBot(
     throw new Error(`Failed to create bot: ${res.status} ${await res.text()}`);
   const data = await res.json();
   const botId = data.bot?.schemaName || data.bot?.cdsBotId;
-  const componentId = data.botComponentChanges?.[0]?.component?.id;
-  const changeToken = data.changeToken;
-  return { botId, componentId, changeToken };
-}
-
-async function updateBotInstructions(
-  envUrl: string,
-  token: string,
-  botId: string,
-  componentId: string,
-  changeToken: string,
-): Promise<void> {
-  // Update with instructions using the changeToken from bot creation
-  const updateBody = {
-    botComponentChanges: [
-      {
-        component: {
-          $kind: "GptComponent",
-          id: componentId,
-          parentBotId: botId,
-          displayName: getAgentName(),
-          description: AGENT_DESCRIPTION,
-          schemaName: `${botId}.gpt.default`,
-          metadata: {
-            $kind: "GptComponentMetadata",
-            instructions: {
-              $kind: "TemplateLine",
-              segments: [
-                {
-                  $kind: "TextSegment",
-                  value: getAgentInstructions(),
-                  diagnostics: [],
-                },
-              ],
-              diagnostics: [],
-            },
-            knowledgeSources: {
-              $kind: "SearchAllKnowledgeSources",
-              diagnostics: [],
-            },
-            gptCapabilities: {
-              $kind: "GptCapabilities",
-              webBrowsing: false,
-              codeInterpreter: false,
-              generateImages: false,
-              searchTeams: false,
-              searchOneDriveAndSharePoint: false,
-              searchEmails: false,
-              searchMeetings: false,
-              searchPeople: false,
-              diagnostics: [],
-            },
-            conversationStarters: [],
-            aISettings: {
-              $kind: "AISettings",
-              useModelKnowledge: true,
-              diagnostics: [],
-            },
-            tools: [],
-            diagnostics: [],
-          },
-          diagnostics: [],
-        },
-        $kind: "BotComponentUpdate",
-      },
-    ],
-    changeToken,
-  };
-
-  const res = await ppFetch(
-    `${envUrl}/copilotstudio/minimalBots/api/${botId}/components?api-version=2022-03-01-preview`,
-    token,
-    {
-      method: "PUT",
-      body: JSON.stringify(updateBody),
-    },
-  );
-
-  if (!res.ok)
-    throw new Error(
-      `Failed to update bot instructions: ${res.status} ${await res.text()}`,
-    );
+  return { botId };
 }
 
 async function publishBot(
@@ -374,8 +293,8 @@ async function publishBot(
  * Get or create the tool-calling agent for the CURRENT instructions.
  * The agent is versioned by name (AGENT_BASE_NAME-<instructionsHash>), so editing
  * getAgentInstructions() transparently provisions a fresh agent on the next call
- * and retires the old one. Returns the agent ID to pass to copilotChat, or null
- * if agent creation isn't possible.
+ * and retires the old one. Returns the agent ID to pass to CopilotSession (as
+ * `agentId`), or null if agent creation isn't possible.
  */
 export async function getOrCreateAgent(
   opts: { forceRefresh?: boolean } = {},

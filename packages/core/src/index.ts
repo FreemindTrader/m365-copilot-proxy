@@ -17,7 +17,6 @@ export {
 export { getOrCreateAgent } from "./agent.js";
 
 export {
-  copilotChat,
   decodeJwt,
   getToneForModel,
   getAvailableModels,
