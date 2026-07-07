@@ -248,7 +248,11 @@ export interface ParseResult {
 const CONFABULATION_PATTERNS: RegExp[] = [
   /return(?:ing|s|ed)?\s+no\s+(?:output|results?|content)/i,
   /no\s+(?:output|results?|content|data)\s+(?:was\s+|were\s+)?(?:return|provid|present)/i, // "no content was returned"
-  /(?:unable|not able|can.?t|cannot)\s+to?\s*(?:access|inspect|list|read|run|locate|see|open)/i,
+  // The `to` is optional — matches both "unable TO access" and "can't access" (the
+  // old `to?` made the *t* mandatory, so "can't inspect"/"can't access" slipped
+  // through). `execute`/`retrieve`/`fetch` added: the give-up reflex phrases them
+  // ("unable to execute or retrieve any output") and they were absent from the list.
+  /(?:unable|not able|can.?t|cannot)\s+(?:to\s+)?(?:access|inspect|list|read|run|execute|retrieve|fetch|locate|see|open)/i,
   /don.?t\s+have\s+access/i,
   /no\s+access\s+to/i,
   /paste\s+(?:the\s+)?(?:contents?|files?|code|them)/i,

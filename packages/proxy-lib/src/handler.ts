@@ -3,6 +3,7 @@ import {
   type ModelSessionOptions,
   createLogger,
   trunc,
+  getToneForModel,
   formatMessages,
   parseToolCalls,
   looksLikeConfabulation,
@@ -173,8 +174,17 @@ export async function handleChatCompletion(
   // agent. So: attach the tool agent EXCEPT on Claude models — there, stay agent-less
   // to get real Claude doing tools via shell-routing (docs §10 F23). Force the old
   // behavior with M365_FORCE_AGENT=1.
-  const isClaudeModel = /claude/i.test(model);
-  const useToolAgent = !!hasTools && (process.env.M365_FORCE_AGENT === "1" || !isClaudeModel);
+  // Stay agent-less ONLY when the tone is actually a Claude tone — empirically that's
+  // the path that tool-calls right now (route-probe 2026-07-07: Claude_Sonnet agent-less
+  // 2/2; the magic path 0/2). Derive it from the RESOLVED tone, not the raw model
+  // string: getToneForModel now routes any unmapped `claude-*` (e.g. the
+  // `claude-opus-4-8[1m]` a Claude Code client sends) to Claude_Sonnet, so this check
+  // then keeps that request on the working agent-less path. The old
+  // `/claude/i.test(model)` + `magic` fallback split a claude-* string into GPT-tone +
+  // agent-suppressed — the confab quadrant we observed. One resolved tone drives both.
+  const tone = getToneForModel(model);
+  const isClaudeTone = /^Claude_/i.test(tone);
+  const useToolAgent = !!hasTools && (process.env.M365_FORCE_AGENT === "1" || !isClaudeTone);
 
   // Format message: full prompt on first turn, delta on follow-ups.
   // M365 is stateful — it remembers everything from prior turns,

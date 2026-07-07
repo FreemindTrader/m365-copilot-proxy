@@ -39,7 +39,11 @@ export const ChatMessage = z.object({
 });
 
 export const ChatCompletionRequest = z.object({
-  model: z.string().optional().default("m365-copilot"),
+  // Default when the client sends no model. An explicit reasoning tone is a more
+  // reliable default than `m365-copilot` (the `magic` auto-router), which is
+  // high-variance at turn-1 tool-calling (see docs/hypotheses.md F24 + correction:
+  // magic swung 0/2 → 2/2 across probes; explicit tones pin a specific backend).
+  model: z.string().optional().default("gpt-5.5-think-deeper"),
   messages: z.array(ChatMessage).min(1),
   stream: z.boolean().optional().default(false),
   // OpenAI streaming option: include_usage=true → emit a final chunk with `usage`.

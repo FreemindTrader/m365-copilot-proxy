@@ -103,7 +103,17 @@ const MODEL_TONES: Record<string, string> = {
 };
 
 export function getToneForModel(model: string): string {
-  return MODEL_TONES[model] ?? MODEL_TONES["m365-copilot"];
+  const exact = MODEL_TONES[model];
+  if (exact) return exact;
+  // Unmapped `claude-*` strings (e.g. the `claude-opus-4-8[1m]` a Claude Code client
+  // sends) must NOT fall back to the `magic` (GPT) tone. Empirically (route-probe,
+  // 2026-07-07) the magic path does not tool-call right now — 0/2, confabulates
+  // "I don't have a shell" — while the Claude tone agent-less path tool-calls 2/2 and
+  // fast (~5s). Route anything Claude-labelled to the working Claude_Sonnet tone
+  // rather than silently serving GPT under a Claude name and landing in the
+  // confabulation quadrant. (getAvailableModels still only advertises the exact keys.)
+  if (/^claude/i.test(model)) return "Claude_Sonnet";
+  return MODEL_TONES["m365-copilot"];
 }
 
 export function getAvailableModels(): string[] {

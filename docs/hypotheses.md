@@ -36,6 +36,60 @@ fenced shell-routing. Orchestrator `scripts/bench/overnight-sweep.sh` rotates BO
 strategy and task order per round (controls the §M caveat-4 order effect AND the
 task-position confound). Raw: `/tmp/m365-overnight.csv` + `scripts/bench/out/ov-*.json`.
 
+### F24 — (July 7 2026) The `magic`/GPT path REGRESSED to 0 tool-calls; Claude-tone agent-less still works; model-string routing had a confab trap 🟡
+**Trigger.** A live Claude Code session pointed at the proxy confabulated ("I can't access or
+execute commands… paste the files") on an agentic ask — the classic turn-1 give-up, but the
+confab-retry safety net never fired.
+**Probe.** `route-probe` (scratchpad, n=2/cell, single-turn, one shell tool, 25s cooldowns,
+service `0.2.0` running build, magic-agent + baseline framing as deployed):
+| model string | resolved path | acted | latency | verdict |
+|---|---|---|---|---|
+| `m365-copilot` | magic tone + agent requested | **0/2** | ~49s | confabulate / prose ("no usable shell output") |
+| `claude-sonnet` | `Claude_Sonnet` + agent-less | **2/2** | ~5s | tool_calls |
+| `claude-opus-4-8[1m]` | magic (fallback) + agent SUPPRESSED | **0/2** | ~8s | "I don't have a functioning shell tool" |
+**Findings.**
+1. **The `magic`/GPT path is not tool-calling right now (0/2).** This is a REGRESSION vs F23's
+   contemporaneous 8/8 for `m365-copilot` (June 25). Cause not isolated (couldn't read
+   `compliantAgentName` — the proxy surfaces `contentOrigin` only, and per api-doc §237 `DeepLeo`
+   shows on BOTH agent and agent-less paths, so the probe can't tell whether the agent attached or
+   `getOrCreateAgent()` is returning null on the deployed service). Candidate causes: agent
+   creation failing (missing PP/BAP scopes on the service's cached auth), a deleted-agent trap, or
+   a genuine model-side drift. **Next:** surface `gptIdentifiers[].compliantAgentName` in `usage`
+   so the agent-attach state is observable, and check the service's auth scopes / agent cache.
+2. **Claude-tone agent-less is the reliable path (2/2, fast).** Consistent with F23; it did NOT
+   regress. So the immediate operational answer is **use `claude-sonnet`, not `m365-copilot`.**
+3. **Model-string routing bug (deterministic, fixed).** `claude-opus-4-8[1m]` (what a Claude Code
+   client sends) hit the WORST quadrant: `getToneForModel` exact-matched nothing → fell back to
+   `magic` (GPT), while `useToolAgent = /claude/i.test(model)` still stripped the agent → GPT-chat
+   agent-less = guaranteed confab. The tone-resolution and agent-attach decisions disagreed.
+**Shipped (this session, uncommitted):**
+- `getToneForModel`: unmapped `claude-*` now → `Claude_Sonnet` (the working path) instead of the
+  `magic` fallback. `getAvailableModels` still advertises only the exact keys.
+- `handler`: `useToolAgent` now derives from the RESOLVED tone (`/^Claude_/`), not the raw model
+  string — so agent-less ⟺ Claude tone. The two now can't disagree.
+- `tools.ts` confab regex: `to?` (which forced a literal "t", so "can't access"/"can't inspect"
+  slipped through) → `(?:to\s+)?`; added `execute|retrieve|fetch` to the verb list (the observed
+  give-up phrasing). Was a second reason the safety net missed this failure.
+**Confidence.** High on the routing/regex bugs (deterministic, unit-tested). ~~Medium~~ **LOW** on the
+magic regression — see correction. **Falsify:** re-run `route-probe` on a rested account.
+
+**⚠️ Correction (later same day, 2026-07-07) — the "magic regressed" claim does NOT hold.** A follow-up
+tone sweep (`tone-sweep.mjs`, same rig) two hours later got `m365-copilot` **2/2 ACTED** — the exact
+opposite of the 0/2 that seeded this finding. In the same sweep the *controls* also swung
+(`claude-sonnet` 1/2, `gpt-5.5-think-deeper` 1/2), and `quick`/`Gpt_Quick` returned instant 502s
+(dead tone or throttle-onset). **Interpretation:** single-turn, back-to-back probes are dominated by
+THREAD-RATE degradation (F13), not tone quality — ~16 fresh conversations were started across the two
+runs, which is exactly what trips the throttle-that-looks-like-confab. So both the 0/2 and the 2/2 are
+measuring the account's thread-rate state, not the `magic` tone. **The instrument is wrong for this
+question:** ranking tones needs the multi-turn bench with rotated order + generous cooldowns on a
+RESTED account (the F23 overnight methodology), because a real pi session is ONE long thread (cheap)
+while our probes are many threads (self-throttling). Net: no evidence `magic` is specifically broken;
+the deterministic routing/regex fixes stand on their own merits; the pi default (`gpt-5.5-think-deeper`)
+rests on real-session experience, which is the more reliable signal here.
+**Note:** `Claude_Opus` remains a dead agent-less tone (F23: 0/3, `BotConnection` apology) — the
+generic `claude-*`→`Claude_Sonnet` fallback deliberately avoids it; bare `claude-opus` still maps
+to the dead `Claude_Opus` and should probably be remapped too.
+
 ### F23 — CLAUDE-FOR-TOOLS works via agent-LESS shell-routing (overturns §8.9-8.11 "MCP-only") 🟢
 **Claim.** Claude Sonnet 4.5 will drive a real agentic coding loop through the proxy **without the
 declarative agent** — agent-less, the `Claude_Sonnet` tone routes to real Claude AND it emits tool
