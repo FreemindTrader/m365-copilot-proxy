@@ -23,7 +23,13 @@ export const ToolDefinition = z.object({
 });
 
 export const ChatMessage = z.object({
-  role: z.enum(["system", "user", "assistant", "tool"]),
+  // `developer` is OpenAI's reasoning-model role — it replaces `system` for o1/
+  // gpt-5-class reasoning models, and clients like Hermes emit it when pointed at
+  // a `*-think-deeper` model. Accept it and normalize to `system` so every
+  // downstream consumer only ever sees the four canonical roles.
+  role: z.enum(["system", "developer", "user", "assistant", "tool"]).transform(
+    (r) => (r === "developer" ? "system" : r),
+  ),
   content: z.union([
     z.string(),
     z.array(
