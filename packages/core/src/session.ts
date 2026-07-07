@@ -100,6 +100,31 @@ const VARIANTS = [
   "Agt_bizchat_enableGpt5ForHelix",
 ].join(",");
 
+/**
+ * Fold one incoming piece of streamed text — a token DeltaUpdate (passed as
+ * `answer + writeAtCursor`) or a full-text MessageUpdate snapshot — into the
+ * running answer, returning the new answer and the suffix to stream (if any).
+ *
+ * M365 mixes token deltas with full-text snapshots, and the first token often
+ * arrives ONLY as a snapshot, so naive delta concatenation drops the head. The
+ * rules:
+ *  - `next` no longer than the current answer → no growth, emit nothing.
+ *  - `next` extends the current answer → advance and emit the appended suffix.
+ *  - `next` is longer but DIVERGES (doesn't start with the current answer, e.g. a
+ *    snapshot carrying a head the deltas never sent) → adopt it as authoritative
+ *    for the buffered result but emit nothing: already-streamed bytes can't be
+ *    retracted, so we never stream a non-prefix (which would dup/corrupt).
+ * This keeps every emitted suffix a true prefix of the final answer.
+ */
+export function foldStreamText(
+  answer: string,
+  next: string,
+): { answer: string; emit: string | null } {
+  if (next.length <= answer.length) return { answer, emit: null };
+  if (next.startsWith(answer)) return { answer: next, emit: next.slice(answer.length) };
+  return { answer: next, emit: null };
+}
+
 export interface CopilotSessionOptions {
   agentId?: string;
   /** Reuse an existing session ID across reconnections. */
@@ -165,8 +190,11 @@ export class CopilotSession {
     const sessionId = this.sessionId;
 
     return new Promise((resolve, reject) => {
-      let fullText = "";
-      let deltaText = "";
+      // The authoritative reconstructed answer. M365 streams a MIX of token-level
+      // DeltaUpdates and full-text MessageUpdate snapshots (empirically the FIRST
+      // token often arrives only as a snapshot, not a delta), so we can't just
+      // concatenate deltas — we fold both into this one string. See `advance`.
+      let answer = "";
       let receivedContent = false;
       let throttleInfo: { current: number; max: number } | null = null;
       let contentOrigin: string | null = null;
@@ -177,13 +205,61 @@ export class CopilotSession {
       const maxScores: Record<string, number> = {};
       let turnCountServer: number | null = null;
       let turnState: string | null = null;
-      let onDelta: ((text: string) => void) | null = null;
-      let onDone: (() => void) | null = null;
-      let onError: ((err: Error) => void) | null = null;
+
+      // Delta pump. The queue/state live at Promise scope (NOT inside the
+      // asyncIterator factory) so deltas that arrive between `resolve(stream)` and
+      // the consumer starting to iterate are buffered instead of dropped — the
+      // early-token loss that made true incremental streaming lossy. onDelta/onDone/
+      // onError are wired once here, so they never depend on iteration having begun.
+      const queue: string[] = [];
+      let streamDone = false;
+      let streamError: Error | null = null;
+      let waiting: {
+        resolve: (result: IteratorResult<string>) => void;
+        reject: (err: Error) => void;
+      } | null = null;
+
+      const onDelta = (text: string) => {
+        if (waiting) {
+          const w = waiting;
+          waiting = null;
+          w.resolve({ value: text, done: false });
+        } else {
+          queue.push(text);
+        }
+      };
+      const onDone = () => {
+        streamDone = true;
+        if (waiting) {
+          const w = waiting;
+          waiting = null;
+          w.resolve({ value: undefined as any, done: true });
+        }
+      };
+      const onError = (err: Error) => {
+        streamError = err;
+        streamDone = true;
+        if (waiting) {
+          const w = waiting;
+          waiting = null;
+          w.reject(err);
+        }
+      };
+
+      // Fold a token delta OR a full-text snapshot into `answer` and stream the
+      // newly-appended suffix (see foldStreamText for the prefix-safe rules).
+      const advance = (next: string) => {
+        const r = foldStreamText(answer, next);
+        if (r.answer !== answer) {
+          answer = r.answer;
+          receivedContent = true;
+        }
+        if (r.emit) onDelta(r.emit);
+      };
 
       const stream: CopilotStream = {
         get fullText() {
-          return deltaText.length >= fullText.length ? deltaText : fullText;
+          return answer;
         },
         get hasContent() {
           return receivedContent;
@@ -211,50 +287,15 @@ export class CopilotSession {
         },
 
         [Symbol.asyncIterator]() {
-          const queue: string[] = [];
-          let done = false;
-          let error: Error | null = null;
-          let waiting: {
-            resolve: (result: IteratorResult<string>) => void;
-            reject: (err: Error) => void;
-          } | null = null;
-
-          onDelta = (text: string) => {
-            if (waiting) {
-              const w = waiting;
-              waiting = null;
-              w.resolve({ value: text, done: false });
-            } else {
-              queue.push(text);
-            }
-          };
-
-          onDone = () => {
-            done = true;
-            if (waiting) {
-              const w = waiting;
-              waiting = null;
-              w.resolve({ value: undefined as any, done: true });
-            }
-          };
-
-          onError = (err: Error) => {
-            error = err;
-            done = true;
-            if (waiting) {
-              const w = waiting;
-              waiting = null;
-              w.reject(err);
-            }
-          };
-
           return {
             next(): Promise<IteratorResult<string>> {
-              if (error) return Promise.reject(error);
+              // Drain buffered deltas BEFORE surfacing done/error, so a fast turn
+              // that finished before iteration began still yields all its text.
               if (queue.length > 0) {
                 return Promise.resolve({ value: queue.shift()!, done: false });
               }
-              if (done) {
+              if (streamError) return Promise.reject(streamError);
+              if (streamDone) {
                 return Promise.resolve({ value: undefined as any, done: true });
               }
               return new Promise((res, rej) => {
@@ -350,15 +391,15 @@ export class CopilotSession {
         if (!handshakeDone) {
           reject(new Error(`WebSocket error: ${msg}`));
         } else {
-          onError?.(new Error(`WebSocket error: ${msg}`));
+          onError(new Error(`WebSocket error: ${msg}`));
         }
       });
 
       ws.on("close", () => {
         clearAbort();
-        log.info("WS closed, fullText length:", fullText.length);
-        log.debug("Final response:", trunc(deltaText || fullText, 1000));
-        onDone?.();
+        log.info("WS closed, answer length:", answer.length);
+        log.debug("Final response:", trunc(answer, 1000));
+        onDone();
       });
 
       const sendChat = () => {
@@ -493,7 +534,7 @@ export class CopilotSession {
         if (base.type === 7) {
           const frame = CloseFrame.safeParse(raw);
           if (frame.success && frame.data.error) {
-            onError?.(new Error(`Server close: ${frame.data.error}`));
+            onError(new Error(`Server close: ${frame.data.error}`));
           }
           ws.close();
           return;
@@ -502,7 +543,7 @@ export class CopilotSession {
         if (base.type === 3) {
           const frame = CompletionFrame.safeParse(raw);
           if (frame.success && frame.data.error) {
-            onError?.(new Error(`Completion error: ${frame.data.error}`));
+            onError(new Error(`Completion error: ${frame.data.error}`));
           }
           ws.close();
           return;
@@ -541,9 +582,7 @@ export class CopilotSession {
           for (const arg of base.arguments) {
             const delta = DeltaUpdate.safeParse(arg);
             if (delta.success) {
-              receivedContent = true;
-              deltaText += delta.data.writeAtCursor;
-              onDelta?.(delta.data.writeAtCursor);
+              advance(answer + delta.data.writeAtCursor);
               continue;
             }
 
@@ -568,8 +607,7 @@ export class CopilotSession {
                   if (m.turnState) turnState = m.turnState;
                 }
                 if (m.author === "bot" && m.text && !m.messageType) {
-                  receivedContent = true;
-                  fullText = m.text;
+                  advance(m.text);
                 }
               }
               continue;
