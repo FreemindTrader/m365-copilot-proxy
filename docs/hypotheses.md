@@ -24,6 +24,118 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 - §6 — Cost / metering open questions
 - §7 — Probe backlog, ordered by info-gain ÷ cost
 - §8 — Capability-expansion hypotheses (web-research dig: empty `optionsSets`, code interpreter, MCP actions, Claude tone, throttling levers, reference implementations)
+- §11 — Detection / anti-flagging science run (July 7 2026 — auto-reauth is loud AND probably useless)
+
+---
+
+## 11. July 7 2026 — flying under Microsoft's radar (auto-reauth detection science run)
+
+**Premise (user).** The auto-reauth loop (`auth-recovery.ts` → `forceReauth`) may be
+tripping Microsoft's abuse/identity-risk detection. Goal: characterise our detectable
+surface and reduce it — on our OWN account, to avoid false-positive lockouts, not to
+attack anyone.
+
+Two detection systems key on us:
+- **Entra ID Identity Protection** (the *auth* side) — scores every sign-in for risk
+  (unfamiliar device/properties, atypical frequency, automation). This is where
+  `forceReauth` lives, and it's the **high-risk** surface.
+- **Substrate / BizChat abuse** (the *API* side) — client fingerprint + request cadence.
+  Lower risk (we already reuse conversations, pace threads).
+
+### F25 — Our headless login browser presents a textbook automation fingerprint 🟢
+**Claim.** `runBrowserLogin()`'s Chromium config leaks the loudest possible "I am a bot"
+signals to `login.microsoftonline.com`, which is one of the most aggressively
+device-fingerprinted pages on the web (it feeds Identity Protection risk scoring).
+
+**Evidence (n=1 config test, zero-network — `about:blank` eval of the EXACT `auth.ts`
+launch opts; `scripts/`-style probe, not committed).** Config A = current
+`{headless:true, args:["--no-sandbox","--disable-dev-shm-usage"]}`:
+- `navigator.webdriver === true` — direct automation flag, read by AAD's fp JS.
+- UA = `…HeadlessChrome/146.0.0.0…` — **the string "HeadlessChrome" is sent in the
+  User-Agent header on every login request**, so we advertise "bot" even server-side,
+  no JS needed.
+- WebGL renderer = `SwiftShader` (software rasteriser) — classic headless/VM tell (no GPU).
+- `navigator.userAgentData === null` — real Chrome exposes it; null is itself anomalous.
+- Fresh context every login → **no persistent device cookie** (`ESTSAUTHPERSISTENT`), so
+  every login looks like a brand-new unfamiliar device → "unfamiliar sign-in properties"
+  fires *every time*.
+
+**Naive-hardening trap (Config B tested too).** Just overriding UA→real Chrome +
+`webdriver→undefined` + `--disable-blink-features=AutomationControlled` **removes the two
+loudest tells but creates NEW contradictions**: UA now says "Windows Chrome 141" while
+`navigator.platform` still says `Linux x86_64`, `userAgentData` still null, WebGL still
+SwiftShader. Piecemeal string-spoofing yields an *incoherent* fingerprint, which is also
+flaggable. **Lesson: don't try to out-spoof AAD's fingerprinter — avoid the login page.**
+
+**Confidence.** High for the fingerprint facts (measured). The *mapping* from these tells
+to an actual Entra risk detection is inferred, not yet read from Microsoft's logs (see H-R2).
+
+### H-R1 — Re-auth does NOT clear throttle; any recovery is the idle time it forces 🟡→(near-confirmed)
+**Claim.** The whole reason auto-reauth exists (F13: "fresh login clears degradation") is a
+**confound**. Throttle is `oid`-keyed (API doc §2/§7, `token-regen-probe`: a regenerated
+token carries the same `oid` → same throttle bucket). F13's recovery was explicitly
+"n=1 and confounded with a ~4-min rest." So the login didn't clear anything — **the ~15 min
+of login+restart wall-clock is just the idle gap that lets the account self-heal** (§7:
+"self-heals with a lull").
+
+**This contradiction already lives in the repo:** `auth-recovery.ts`/AGENTS.md say "fresh
+login clears it"; API doc §2/§7 say "re-auth does NOT clear throttling." §2/§7 is the more
+controlled finding. If H-R1 holds, auto-reauth provides **zero** throttle benefit while
+carrying **all** the F25 flag-risk — pure downside.
+
+**Prediction.** On a degraded account, `forceReauth`→retry and (equal-wall-clock idle with
+the SAME token)→retry recover at the **same** time; neither is faster.
+**Probe (BUILT, validated — `scripts/throttle-recovery-ab.mjs`).** Within-episode two-token
+control: hold token_OLD (cache) and token_NEW (fresh full login), both same `oid`; while
+degraded, alternate `pong` probes between them on a fixed cadence and see which recovers
+first. Both recover together ⇒ token-independent (H-R1 confirmed); NEW recovers ≥2 rounds
+before OLD ⇒ token is the lever. Refuses to conclude on a rested account. Dry-run July 7:
+plumbing works, account was rested (clean `pong`, throttle 1/600) → needs a degraded episode
+(run opportunistically when degraded, or `--induce=N` to force it, which burns N threads).
+**Falsification.** Fresh token returns clean `pong` while the same-moment OLD token still
+empties ⇒ token really is the lever, keep reauth.
+
+### H-R2 — The interactive re-login is the actual Entra-risk event; silent refresh is invisible 🔴
+**Claim.** Silent MSAL refresh (refresh-token grant, no browser) generates a benign
+"non-interactive" sign-in; the headless password+TOTP re-login generates an **interactive**
+sign-in from an unfamiliar automated device → elevated risk. At the reauth cadence
+(threshold 3 empties/120s, cooldown 300s) sustained degradation can fire **~12 full
+password+TOTP logins/hour** — wildly atypical (real users: silent-refresh for days, a few
+interactive logins/*day*).
+**Cheap probe (zero quota, reads Microsoft's OWN verdict).** Check
+`https://mysignins.microsoft.com` (or Entra sign-in logs) for the account: do the
+`forceReauth` events show as interactive sign-ins flagged "unfamiliar/atypical", and has the
+user-risk level risen? This is the single highest-info probe and touches no chat quota.
+**Falsification.** Reauth logins appear as ordinary low-risk sign-ins with no risk
+detections accruing ⇒ the auth surface isn't the problem, look at Substrate.
+
+### H-R3 — A persistent browser profile makes the RARE login device-familiar (partly SSO) 🟢
+**Claim.** `chromium.launchPersistentContext(userDataDir)` persists `ESTSAUTH*`/device
+cookies, so a returning login is recognised as a *familiar device* → risk reduction.
+**VALIDATED live (July 8 2026, two throwaway back-to-back logins, `scripts/`
+login-validate).** Run 1 cold = full form (9.5s). Run 2 warm = AAD showed the **account
+picker with the remembered account** (proof the device/session cookie persisted), clicked
+the tile → **email step skipped** → password + MFA → auth code in **3.4s**; the resulting
+token drove a real `pong` (throttle 1/600). So the profile IS recognised as a returning
+device (the risk-lowering signal). *Partial:* password + TOTP are still re-entered — this
+tenant doesn't have "remember MFA/device" enabled, so it's device-familiar but not fully
+silent. Implemented in `auth.ts` (`launchPersistentContext` + `clickAccountTileIfPresent`
++ SSO-tolerant `driveAzureLogin`). **Note for the implementer:** after picking the tile you
+MUST skip the email step — the page goes straight to "Enter password" and re-typing the
+email matches a stale hidden `loginfmt` and derails the flow (cost 3 debug cycles).
+
+### Ranked recommendations (design; not yet implemented)
+1. **Stop discarding the refresh token / stop the loud path.** Don't `removeAccount()` in
+   `forceReauth`; the token isn't the problem (H-R1). Prefer silent refresh always.
+2. **Replace auto-reauth-on-empties with plain backoff/idle** — this is almost certainly
+   what actually "recovered" F13, and it deletes the entire F25 flag surface. Two birds.
+3. **If an interactive login is ever needed, use a persistent profile** (H-R3) so it's
+   SSO-silent and device-consistent, and drop the headless tells (real headful Chrome under
+   Xvfb, real profile) rather than string-spoofing (F25 Config-B trap).
+4. **Make Substrate's WS fingerprint coherent** with the auth stack (today: WS advertises
+   Firefox 148, auth is Chromium — mismatched). Lower priority than 1–3.
+5. **Verify with H-R2 first** — read the sign-in logs before changing code, so we're
+   treating the surface Microsoft actually flags, not a guessed one.
 
 ---
 

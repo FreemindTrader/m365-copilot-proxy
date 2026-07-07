@@ -11,6 +11,7 @@ import {
   isProseDocument,
   getMessageContent,
   noteRequestOutcome,
+  awaitDegradationBackoff,
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import type { z } from "zod/v4";
@@ -237,6 +238,12 @@ export async function handleChatCompletion(
     let agentRefreshed = false;
     let disengageRetried = false;
     const originalText = text;
+    // Self-imposed pacing while the account is degraded (thread-rate throttle). A
+    // no-op when healthy; during backoff it sleeps a jittered delay so we stop
+    // starting fresh turns into the throttle and let it self-heal (H-R1). This
+    // replaced the old auto-reauth, which didn't clear the throttle and raised our
+    // detection profile. A single long pi thread never trips the trigger.
+    await awaitDegradationBackoff();
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       let copilotStream;
       try {
@@ -335,9 +342,9 @@ export async function handleChatCompletion(
         text = "Please continue."; // M365 already has context
       } else {
         // Final empty after retries, and not an at-limit (per-conversation) cap:
-        // this is the thread-rate throttle signature (F13). Feed the auto-reauth
-        // policy — it fires a background re-login once empties span enough distinct
-        // conversations. Never blocks this request.
+        // this is the thread-rate throttle signature (F13). Feed the degradation-
+        // backoff policy — once empties span enough distinct conversations it paces
+        // subsequent turns so the account can self-heal (H-R1). Never blocks this request.
         noteRequestOutcome(true, convId);
         return { error: emptyResponseResponse(t) };
       }

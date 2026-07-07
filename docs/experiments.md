@@ -120,6 +120,19 @@ gets a non-zero `SOLVED` / tool-call rate. **Always diff against the magic basel
 - **Run:** throttle-probe with `plugins:[]` vs default Bing; compare onset.
 - **Cost:** bursty.
 
+### E-T3 — Does a fresh login clear throttle, or is it just idle time?  (`scripts/throttle-recovery-ab.mjs`)
+- **Hypothesis (H-R1, §11):** re-auth does NOT clear thread-rate throttle (it's
+  `oid`-keyed); F13's "fresh login recovered it" was confounded by ~4 min of rest.
+  If true, auto-reauth is pure downside — it carries all the F25 login-fingerprint
+  flag-risk for zero throttle benefit.
+- **Run (needs a DEGRADED account):**
+  `CHROMIUM_PATH=$(which chromium) node scripts/throttle-recovery-ab.mjs --rounds=12 --gap=45`
+  Add `--induce=20` to force degradation first (burns ~20 threads). Within-episode
+  two-token control: OLD (cache) vs NEW (fresh login), same `oid`, alternated probes.
+- **Read:** the printed `verdict` — `H-R1_CONFIRMED_TOKEN_IRRELEVANT` (both recover
+  together) vs `H-R1_REJECTED_TOKEN_IS_LEVER` (NEW recovers ≥2 rounds earlier).
+- **Cost:** ~2 threads/round + one full login. Refuses to run on a rested account.
+
 ---
 
 ## C. License-free capability unlocks (optionsSets — §8.1)

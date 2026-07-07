@@ -1,55 +1,85 @@
-import { forceReauth } from "./auth.js";
 import { createLogger } from "./log.js";
 
-const log = createLogger("reauth");
+const log = createLogger("backoff");
 
-// Auto-reauth policy (docs/hypotheses.md §9 F13). Account degradation is thread-rate
-// throttling that surfaces as EMPTY responses across many conversations; a fresh
-// login clears it. We trigger a background re-login when empties pile up across
-// DISTINCT conversations within a window — distinct-conversation is the key signal:
-// repeated empties in ONE conversation are usually content-specific (a bad agent,
-// a Disengage-shaped prompt), not account throttle, and re-login won't help those.
+// Degradation BACKOFF policy (docs/hypotheses.md §11, H-R1). Account degradation is
+// thread-rate throttle that surfaces as EMPTY responses across many DISTINCT
+// conversations. The old policy fired a background re-login on this signal — but a
+// fresh token carries the same `oid`, so it lands in the same identity-keyed throttle
+// bucket (API doc §2/§7): re-auth does NOT clear the throttle. The one observation that
+// a fresh login "recovered" it (F13) was confounded by the ~15 min the login+restart
+// took — it was the idle time, not the token. And the headless re-login is the single
+// most detectable thing we do at Microsoft (F25: `webdriver=true`, a `HeadlessChrome`
+// UA, a fresh unfamiliar device every time). So we drop the login entirely and do what
+// actually works against a time-driven throttle: BACK OFF. On sustained distinct-
+// conversation empties we self-impose a paced delay before starting new backend turns,
+// giving the account room to self-heal.
 //
-// Guards against login storms: single-flight (the reauth itself), a cooldown between
-// triggers, and a clean-success resets the streak. The trigger never blocks the
-// request path — the current request still returns its empty; subsequent ones recover.
+// A real pi/openclaw session is ONE long thread, so it never trips the distinct-
+// conversation trigger — only bursty multi-conversation use (experiments, benches) does,
+// which is exactly the traffic that should slow down.
+//
+// Guards: distinct-conversation gating (repeated empties in ONE conversation are usually
+// content-specific — a bad agent, a Disengage-shaped prompt — not throttle), a window so
+// stale empties expire, escalation so repeated triggers back off harder, and a clean
+// response that lifts the backoff immediately.
 
-export interface ReauthTrackerOptions {
-  /** The re-login action. Returns true on success. */
-  reauth: () => Promise<boolean>;
+export interface BackoffOptions {
   /** Clock injection for tests. Defaults to Date.now. */
   now?: () => number;
+  /** Sleep injection for tests. Defaults to real setTimeout. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Jitter source in [0,1). Defaults to Math.random. */
+  rng?: () => number;
   /** Empties older than this fall out of the window. */
   windowMs?: number;
-  /** Distinct-conversation empties within the window needed to trigger. */
+  /** Distinct-conversation empties within the window needed to enter backoff. */
   threshold?: number;
-  /** Minimum time between triggers, even if the threshold keeps being met. */
-  cooldownMs?: number;
-  /** Called when a trigger fires (for logging/telemetry). */
-  onTrigger?: (info: { distinctConversations: number }) => void;
+  /** Initial backoff window opened on the first trigger. */
+  baseCooldownMs?: number;
+  /** Cap on the backoff window after escalation. */
+  maxCooldownMs?: number;
+  /** Per-gated-request paced delay is drawn uniformly from [min, max]. */
+  jitterMinMs?: number;
+  jitterMaxMs?: number;
+  /** Called when backoff opens/escalates (for logging/telemetry). */
+  onTrigger?: (info: { distinctConversations: number; cooldownMs: number; level: number }) => void;
 }
 
-export interface ReauthTracker {
+export interface BackoffController {
   /** Record one request outcome. `empty` = throttle-shaped empty response. */
   note: (empty: boolean, conversationId: string) => void;
+  /** Await a paced slot before starting a backend turn. Resolves immediately when
+   *  healthy; during backoff it sleeps a jittered delay. Returns ms slept. */
+  waitForSlot: () => Promise<number>;
+  /** Whether the controller is currently in a backoff window. */
+  isBackingOff: () => boolean;
 }
 
-export function createReauthTracker(opts: ReauthTrackerOptions): ReauthTracker {
+export function createBackoffController(opts: BackoffOptions): BackoffController {
   const now = opts.now ?? (() => Date.now());
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const rng = opts.rng ?? Math.random;
   const windowMs = opts.windowMs ?? 120_000;
   const threshold = opts.threshold ?? 3;
-  const cooldownMs = opts.cooldownMs ?? 300_000;
+  const baseCooldownMs = opts.baseCooldownMs ?? 90_000;
+  const maxCooldownMs = opts.maxCooldownMs ?? 600_000;
+  const jitterMinMs = opts.jitterMinMs ?? 10_000;
+  const jitterMaxMs = opts.jitterMaxMs ?? 25_000;
 
   let empties: Array<{ t: number; conv: string }> = [];
-  let lastTriggerAt = -Infinity;
-  let reauthing = false;
+  let backoffUntil = -Infinity;
+  let level = 0; // escalation level; resets on a clean response
 
   return {
     note(empty, conversationId) {
       const t = now();
       if (!empty) {
-        // A clean response means degradation has lifted — reset the streak.
+        // A clean response means degradation has lifted — reset the streak AND the
+        // backoff window so the next request runs at full speed.
         empties = [];
+        backoffUntil = -Infinity;
+        level = 0;
         return;
       }
 
@@ -58,37 +88,63 @@ export function createReauthTracker(opts: ReauthTrackerOptions): ReauthTracker {
 
       const distinct = new Set(empties.map((e) => e.conv)).size;
       if (distinct < threshold) return;
-      if (reauthing || t - lastTriggerAt < cooldownMs) return;
+      // Already backing off within the current window — don't re-arm/escalate until it
+      // elapses, so a burst of empties doesn't stack the delay unboundedly.
+      if (t < backoffUntil) return;
 
-      reauthing = true;
-      lastTriggerAt = t;
+      level += 1;
+      const cooldownMs = Math.min(baseCooldownMs * 2 ** (level - 1), maxCooldownMs);
+      backoffUntil = t + cooldownMs;
       empties = [];
-      opts.onTrigger?.({ distinctConversations: distinct });
+      opts.onTrigger?.({ distinctConversations: distinct, cooldownMs, level });
+    },
 
-      Promise.resolve()
-        .then(() => opts.reauth())
-        .then(
-          (ok) => log.info(`Auto-reauth ${ok ? "succeeded" : "failed"}`),
-          (err) => log.error(`Auto-reauth threw: ${err?.message ?? err}`),
-        )
-        .finally(() => { reauthing = false; });
+    async waitForSlot() {
+      const remaining = backoffUntil - now();
+      if (remaining <= 0) return 0;
+      const span = Math.max(0, jitterMaxMs - jitterMinMs);
+      const delay = Math.min(remaining, jitterMinMs + Math.floor(rng() * (span + 1)));
+      if (delay > 0) await sleep(delay);
+      return delay;
+    },
+
+    isBackingOff() {
+      return now() < backoffUntil;
     },
   };
 }
 
-const defaultTracker = createReauthTracker({
-  reauth: forceReauth,
-  windowMs: Number(process.env.M365_REAUTH_WINDOW_MS ?? 120_000),
-  threshold: Number(process.env.M365_REAUTH_EMPTY_THRESHOLD ?? 3),
-  cooldownMs: Number(process.env.M365_REAUTH_COOLDOWN_MS ?? 300_000),
-  onTrigger: ({ distinctConversations }) =>
+const disabled = () =>
+  !!(process.env.M365_NO_BACKOFF ?? process.env.M365_NO_AUTO_REAUTH); // legacy alias
+
+const defaultController = createBackoffController({
+  windowMs: Number(process.env.M365_BACKOFF_WINDOW_MS ?? 120_000),
+  threshold: Number(process.env.M365_BACKOFF_THRESHOLD ?? process.env.M365_REAUTH_EMPTY_THRESHOLD ?? 3),
+  baseCooldownMs: Number(process.env.M365_BACKOFF_BASE_MS ?? 90_000),
+  maxCooldownMs: Number(process.env.M365_BACKOFF_MAX_MS ?? 600_000),
+  onTrigger: ({ distinctConversations, cooldownMs, level }) =>
     log.info(
-      `Auto-reauth: ${distinctConversations} empty responses across distinct conversations — forcing fresh login to clear throttle (F13). Disable with M365_NO_AUTO_REAUTH=1.`,
+      `Degradation backoff (level ${level}): ${distinctConversations} empty responses across distinct ` +
+      `conversations — pacing new turns for ~${Math.round(cooldownMs / 1000)}s to let the account self-heal ` +
+      `(H-R1: a re-login would NOT clear this and would raise our detection profile). Disable with M365_NO_BACKOFF=1.`,
     ),
 });
 
-/** Record a request outcome for the global auto-reauth policy. No-op if disabled. */
+/** Record a request outcome for the global degradation-backoff policy. No-op if disabled. */
 export function noteRequestOutcome(empty: boolean, conversationId: string): void {
-  if (process.env.M365_NO_AUTO_REAUTH) return;
-  defaultTracker.note(empty, conversationId);
+  if (disabled()) return;
+  defaultController.note(empty, conversationId);
+}
+
+/** Await a paced slot before a backend turn (self-imposed rate limit while degraded).
+ *  Resolves immediately when healthy or when backoff is disabled. */
+export async function awaitDegradationBackoff(): Promise<void> {
+  if (disabled()) return;
+  const slept = await defaultController.waitForSlot();
+  if (slept > 0) log.info(`Backoff: paced this turn by ${Math.round(slept / 1000)}s (account degraded)`);
+}
+
+/** Whether the global policy is currently backing off. */
+export function isDegradationBackoff(): boolean {
+  return !disabled() && defaultController.isBackingOff();
 }

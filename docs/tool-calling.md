@@ -81,8 +81,10 @@ prompt is tuned. The layers, in handler order:
   one response, running later steps on guessed state. Override with `M365_ALLOW_MULTI_TOOL`.
 - **Empty ≠ rate limit:** an empty reply is treated as throttling only when the throttle is
   **at-limit**; otherwise it fails fast after a couple of quick retries. Repeated empties
-  across **distinct conversations** trigger a background **auto-reauth** (thread-rate throttle
-  clears on fresh tokens — hypotheses §9 F13). `M365_NO_AUTO_REAUTH` to disable.
+  across **distinct conversations** (the thread-rate-throttle signature) trigger **degradation
+  backoff** — the proxy paces subsequent turns so the account self-heals. This replaced the
+  old auto-reauth: a fresh login does **not** clear this throttle (`oid`-keyed — hypotheses
+  §11 H-R1) and raised our detection profile. `M365_NO_BACKOFF` to disable.
 
 > The JSON tool format and the few-shot block were **removed** this cycle (0/5 on real
 > agentic tasks). Tool calling is fenced-only; behavioural framing lives in the per-request

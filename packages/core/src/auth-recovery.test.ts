@@ -1,91 +1,124 @@
-import { describe, it, expect, vi } from "vitest";
-import { createReauthTracker } from "./auth-recovery.js";
-
-const flush = () => new Promise((r) => setTimeout(r, 0));
+import { describe, it, expect } from "vitest";
+import { createBackoffController } from "./auth-recovery.js";
 
 function setup(overrides: Record<string, unknown> = {}) {
   let t = 0;
-  const reauth = vi.fn(async () => true);
-  const tracker = createReauthTracker({
-    reauth,
+  const slept: number[] = [];
+  const controller = createBackoffController({
     now: () => t,
+    sleep: async (ms: number) => { slept.push(ms); },
+    rng: () => 0, // deterministic: jitter lands at jitterMinMs
     windowMs: 1000,
     threshold: 3,
-    cooldownMs: 5000,
+    baseCooldownMs: 5000,
+    maxCooldownMs: 60000,
+    jitterMinMs: 100,
+    jitterMaxMs: 100,
     ...overrides,
   });
-  return { tracker, reauth, advance: (ms: number) => { t += ms; } };
+  return { controller, slept, advance: (ms: number) => { t += ms; } };
 }
 
-describe("createReauthTracker", () => {
-  it("does not trigger below the distinct-conversation threshold", async () => {
-    const { tracker, reauth } = setup();
-    tracker.note(true, "c1");
-    tracker.note(true, "c2");
-    await flush();
-    expect(reauth).not.toHaveBeenCalled();
+describe("createBackoffController", () => {
+  it("does not back off below the distinct-conversation threshold", async () => {
+    const { controller, slept } = setup();
+    controller.note(true, "c1");
+    controller.note(true, "c2");
+    expect(controller.isBackingOff()).toBe(false);
+    expect(await controller.waitForSlot()).toBe(0);
+    expect(slept).toEqual([]);
   });
 
-  it("triggers once enough DISTINCT conversations go empty within the window", async () => {
-    const { tracker, reauth } = setup();
-    tracker.note(true, "c1");
-    tracker.note(true, "c2");
-    tracker.note(true, "c3");
-    await flush();
-    expect(reauth).toHaveBeenCalledTimes(1);
+  it("enters backoff once enough DISTINCT conversations go empty within the window", async () => {
+    const { controller, slept } = setup();
+    controller.note(true, "c1");
+    controller.note(true, "c2");
+    controller.note(true, "c3");
+    expect(controller.isBackingOff()).toBe(true);
+    const delay = await controller.waitForSlot();
+    expect(delay).toBe(100); // jitterMin, rng()=0
+    expect(slept).toEqual([100]);
   });
 
   it("does NOT count repeated empties in the SAME conversation", async () => {
-    const { tracker, reauth } = setup();
-    tracker.note(true, "c1");
-    tracker.note(true, "c1");
-    tracker.note(true, "c1");
-    await flush();
-    expect(reauth).not.toHaveBeenCalled();
+    const { controller } = setup();
+    controller.note(true, "c1");
+    controller.note(true, "c1");
+    controller.note(true, "c1");
+    expect(controller.isBackingOff()).toBe(false);
   });
 
-  it("a clean response resets the streak", async () => {
-    const { tracker, reauth } = setup();
-    tracker.note(true, "c1");
-    tracker.note(true, "c2");
-    tracker.note(false, "c2"); // recovered
-    tracker.note(true, "c3");
-    await flush();
-    expect(reauth).not.toHaveBeenCalled();
+  it("a clean response lifts the backoff immediately", async () => {
+    const { controller } = setup();
+    controller.note(true, "c1");
+    controller.note(true, "c2");
+    controller.note(true, "c3");
+    expect(controller.isBackingOff()).toBe(true);
+    controller.note(false, "c3"); // recovered
+    expect(controller.isBackingOff()).toBe(false);
+    expect(await controller.waitForSlot()).toBe(0);
   });
 
-  it("honors the cooldown between triggers", async () => {
-    const { tracker, reauth, advance } = setup();
-    tracker.note(true, "a1");
-    tracker.note(true, "a2");
-    tracker.note(true, "a3");
-    await flush();
-    expect(reauth).toHaveBeenCalledTimes(1);
+  it("waitForSlot is a no-op after the backoff window elapses", async () => {
+    const { controller, advance, slept } = setup();
+    controller.note(true, "c1");
+    controller.note(true, "c2");
+    controller.note(true, "c3");
+    advance(5001); // past baseCooldownMs
+    expect(controller.isBackingOff()).toBe(false);
+    expect(await controller.waitForSlot()).toBe(0);
+    expect(slept).toEqual([]);
+  });
 
-    // within cooldown — even a fresh batch must not re-trigger
-    advance(1000);
-    tracker.note(true, "b1");
-    tracker.note(true, "b2");
-    tracker.note(true, "b3");
-    await flush();
-    expect(reauth).toHaveBeenCalledTimes(1);
-
-    // past cooldown — triggers again
+  it("escalates the cooldown on repeated triggers", async () => {
+    const { controller, advance } = setup();
+    controller.note(true, "a1");
+    controller.note(true, "a2");
+    controller.note(true, "a3"); // level 1 → 5000ms window
+    advance(5001); // window elapsed
+    expect(controller.isBackingOff()).toBe(false);
+    controller.note(true, "b1");
+    controller.note(true, "b2");
+    controller.note(true, "b3"); // level 2 → 10000ms window
+    advance(5001);
+    expect(controller.isBackingOff()).toBe(true); // still backing off (10s > 5s)
     advance(5000);
-    tracker.note(true, "d1");
-    tracker.note(true, "d2");
-    tracker.note(true, "d3");
-    await flush();
-    expect(reauth).toHaveBeenCalledTimes(2);
+    expect(controller.isBackingOff()).toBe(false);
+  });
+
+  it("does not re-arm/stack the window while already backing off", async () => {
+    const { controller, advance } = setup();
+    controller.note(true, "a1");
+    controller.note(true, "a2");
+    controller.note(true, "a3"); // backoff until t=5000
+    advance(1000);
+    controller.note(true, "b1");
+    controller.note(true, "b2");
+    controller.note(true, "b3"); // ignored — still within window, no escalation
+    advance(4001); // t=5001, past the ORIGINAL window
+    expect(controller.isBackingOff()).toBe(false);
   });
 
   it("drops empties that fall outside the window", async () => {
-    const { tracker, reauth, advance } = setup();
-    tracker.note(true, "c1");
+    const { controller } = setup();
+    controller.note(true, "c1");
+    // advance beyond windowMs via a fresh controller clock
+    const { controller: c2, advance } = setup();
+    c2.note(true, "c1");
     advance(2000); // > windowMs (1000) → c1 expires
-    tracker.note(true, "c2");
-    tracker.note(true, "c3");
-    await flush();
-    expect(reauth).not.toHaveBeenCalled(); // only 2 in-window
+    c2.note(true, "c2");
+    c2.note(true, "c3");
+    expect(c2.isBackingOff()).toBe(false); // only 2 in-window
+    void controller;
+  });
+
+  it("caps a single paced delay at the remaining backoff window", async () => {
+    const { controller, advance } = setup({ jitterMinMs: 3000, jitterMaxMs: 3000 });
+    controller.note(true, "c1");
+    controller.note(true, "c2");
+    controller.note(true, "c3"); // window until t=5000
+    advance(4000); // 1000ms remaining, but jitter wants 3000
+    const delay = await controller.waitForSlot();
+    expect(delay).toBe(1000); // capped at remaining
   });
 });

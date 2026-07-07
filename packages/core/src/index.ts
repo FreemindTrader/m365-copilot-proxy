@@ -9,9 +9,11 @@ export {
 
 export {
   noteRequestOutcome,
-  createReauthTracker,
-  type ReauthTracker,
-  type ReauthTrackerOptions,
+  awaitDegradationBackoff,
+  isDegradationBackoff,
+  createBackoffController,
+  type BackoffController,
+  type BackoffOptions,
 } from "./auth-recovery.js";
 
 export { getOrCreateAgent } from "./agent.js";
