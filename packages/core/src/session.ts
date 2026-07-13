@@ -11,6 +11,12 @@ import {
   CloseFrame,
 } from "./schemas.js";
 import { decodeJwt, getToneForModel, type CopilotStream } from "./copilot.js";
+import {
+  parseActionConfirmation,
+  buildResumeInvokeAction,
+  shouldAutoConfirm,
+  ACTION_ALLOWED_MESSAGE_TYPES,
+} from "./native-actions.js";
 import { createLogger, trunc } from "./log.js";
 
 const RS = "\x1E";
@@ -125,12 +131,32 @@ export function foldStreamText(
   return { answer: next, emit: null };
 }
 
+/**
+ * Attach a native custom action/plugin to a conversation and drive the confirm→invoke
+ * round-trip over the WS (docs/hypotheses.md §12.6, H-NATIVE-6/7). All fields are
+ * best-effort passthroughs modelled on the decompiled client; the exact inline-def
+ * schema still wants a live `SEND_MSG=1` capture, so run with M365_DUMP_FRAMES=1 to
+ * see what the server actually does and refine.
+ */
+export interface NativeActionConfig {
+  /** Inline agent definitions (`gptDefinitions[]`) — the no-sideload agent attach. */
+  gptDefinitions?: unknown[];
+  /** `clientOverrides.capabilities[]` entries (e.g. {name:"RegisteredPlugins", plugins:[…]}). */
+  capabilities?: unknown[];
+  /** `plugins[]` entries ({Id, Source, Data?}). Merged even when an agent is attached. */
+  plugins?: unknown[];
+  /** Approve consequential (state-mutating) actions too. Default: only read-only ones. */
+  autoConfirmAll?: boolean;
+}
+
 export interface CopilotSessionOptions {
   agentId?: string;
   /** Reuse an existing session ID across reconnections. */
   sessionId?: string;
   /** Reuse an existing conversation ID so M365 finds the same server-side conversation. */
   conversationId?: string;
+  /** Enable native custom-action support (H-NATIVE-6/7). Off = unchanged behaviour. */
+  nativeActions?: NativeActionConfig;
 }
 
 /**
@@ -143,12 +169,14 @@ export class CopilotSession {
   private conversationId: string;
   private _turnCount = 0;
   private agentId?: string;
+  private nativeActions?: NativeActionConfig;
 
   constructor(options?: CopilotSessionOptions) {
     this.sessionId = options?.sessionId ?? crypto.randomUUID();
     this.conversationId = options?.conversationId ?? crypto.randomUUID();
     this.agentId = options?.agentId;
-    log.info(`New session: sid=${this.sessionId}, cid=${this.conversationId}, agent=${this.agentId ?? "none"}`);
+    this.nativeActions = options?.nativeActions;
+    log.info(`New session: sid=${this.sessionId}, cid=${this.conversationId}, agent=${this.agentId ?? "none"}, nativeActions=${!!this.nativeActions}`);
   }
 
   /** Number of turns completed in this session */
@@ -188,6 +216,7 @@ export class CopilotSession {
     const wsUrl = `wss://substrate.office.com/m365Copilot/Chathub/${claims.oid}@${claims.tid}?${params}`;
     const agentId = this.agentId;
     const sessionId = this.sessionId;
+    const nativeActions = this.nativeActions;
 
     return new Promise((resolve, reject) => {
       // The authoritative reconstructed answer. M365 streams a MIX of token-level
@@ -205,6 +234,13 @@ export class CopilotSession {
       const maxScores: Record<string, number> = {};
       let turnCountServer: number | null = null;
       let turnState: string | null = null;
+      // Native-action round-trip state (H-NATIVE-6). `baseArgs` is the sent chat
+      // envelope's arguments[0], reused verbatim (minus `message`) to resume an
+      // action. `sawAction` records that the model triggered a custom action this
+      // turn; `actionResumed` guards against double-resuming the same trigger.
+      let baseArgs: Record<string, unknown> | null = null;
+      let sawAction = false;
+      let actionResumed = false;
 
       // Delta pump. The queue/state live at Promise scope (NOT inside the
       // asyncIterator factory) so deltas that arrive between `resolve(stream)` and
@@ -284,6 +320,9 @@ export class CopilotSession {
         },
         get turnState() {
           return turnState;
+        },
+        get sawAction() {
+          return sawAction;
         },
 
         [Symbol.asyncIterator]() {
@@ -403,9 +442,7 @@ export class CopilotSession {
       });
 
       const sendChat = () => {
-        const chatMsg = {
-          arguments: [
-            {
+        const args = {
               source: "officeweb",
               clientCorrelationId: requestId,
               sessionId,
@@ -439,6 +476,9 @@ export class CopilotSession {
                 "ReferencesListComplete",
                 "GeneratedCode",        // code-interpreter execution frames
                 "GenerateContentQuery",
+                // Native custom-action vocabulary (H-NATIVE-6): the server only
+                // SENDS these trigger frames if the client says it can handle them.
+                ...(nativeActions ? ACTION_ALLOWED_MESSAGE_TYPES : []),
               ],
               sliceIds: [] as string[],
               threadLevelGptId: agentId
@@ -481,20 +521,44 @@ export class CopilotSession {
                       source: "MOS3",
                       version: "1.0.0",
                       clientOverrides: {
-                        capabilities: [],
+                        // The real capability channel (H8.2/H8.3/H8.7) — RegisteredPlugins,
+                        // ScenarioModels, CodeInterpreter, … ride here per the decompile.
+                        capabilities: nativeActions?.capabilities ?? [],
                         "deepResearchModels@odata.type": "Collection(String)",
                       },
                     }],
                   }
-                : {
-                    plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }],
-                  }),
+                : {}),
+              // Inline agent definition — attach a custom action WITHOUT sideloading
+              // through Teams/Graph (H-NATIVE-7). Best-effort schema from the decompile;
+              // run with M365_DUMP_FRAMES=1 to see what the server accepts.
+              ...(nativeActions?.gptDefinitions ? { gptDefinitions: nativeActions.gptDefinitions } : {}),
+              // plugins[]: an explicit native-action list wins; otherwise Bing on the
+              // plain (agent-less) path only, exactly as before.
+              ...(nativeActions?.plugins
+                ? { plugins: nativeActions.plugins }
+                : (!agentId ? { plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }] } : {})),
+              // Skill flags that gate the action/confirmation flow — the real client
+              // sends these in the chat payload (bundle 8af68b68f4a2 destructure at
+              // :9373-9378 → payload :11111). Without them the server has no reason to
+              // run the confirmation-dialog / auto-invoke skills, so an attached action
+              // never triggers. Only sent on the native-action path.
+              ...(nativeActions
+                ? {
+                    enableConfirmationDialogSkill: true,
+                    enableAgentAutoInvoke: true,
+                    enableMsgExtAuthSkill: true,
+                    enablePPCAuthSkill: true,
+                  }
+                : {}),
               isSbsSupported: true,
               tone: getToneForModel(model),
               renderReferencesBehindEOS: true,
               disconnectBehavior: "continue",
-            },
-          ],
+        };
+        baseArgs = args;
+        const chatMsg = {
+          arguments: [args],
           invocationId: "0",
           target: "chat",
           type: 4,
@@ -521,6 +585,30 @@ export class CopilotSession {
         dumpFrame(requestId, metrics, "send");
         ws.send(payload);
         resolve(stream);
+      };
+
+      // When the model triggers a native custom action, the server sends a
+      // confirmation TRIGGER (an adaptive card) and waits for us to approve it on
+      // THIS socket. We reuse the exact chat envelope (baseArgs) with a
+      // ResumeInvokeAction message, so the server-side orchestrator makes the real
+      // outbound call (H-NATIVE-6). Returns true if it sent a resume (⇒ keep socket
+      // open for the result). No-op unless native actions are enabled.
+      const maybeResumeAction = (m: unknown): boolean => {
+        if (!nativeActions || actionResumed || !baseArgs) return false;
+        const conf = parseActionConfirmation(m as any);
+        if (!conf) return false;
+        sawAction = true;
+        if (!shouldAutoConfirm(conf, { autoConfirmAll: nativeActions.autoConfirmAll })) {
+          log.info(`Native action ${conf.actionId} is consequential; autoConfirmAll off — not resuming`);
+          return false;
+        }
+        actionResumed = true;
+        const resumeArgs = { ...baseArgs, message: buildResumeInvokeAction(conf) };
+        const frame = { arguments: [resumeArgs], invocationId: "0", target: "chat", type: 4 };
+        dumpFrame(requestId, frame, "send");
+        log.info(`Native action: auto-confirming actionId=${conf.actionId} via ResumeInvokeAction`);
+        try { ws.send(JSON.stringify(frame) + RS); } catch (e) { log.error("resume send failed:", (e as Error).message); }
+        return true;
       };
 
       function handleMsg(raw: unknown) {
@@ -558,6 +646,7 @@ export class CopilotSession {
             if (item.throttling) {
               throttleInfo = { current: item.throttling.numUserMessagesInConversation, max: item.throttling.maxNumUserMessagesInConversation };
             }
+            let resumedHere = false;
             for (const m of item.messages ?? []) {
               if (m.author !== "bot") continue;
               if (m.contentOrigin) contentOrigin = m.contentOrigin;
@@ -572,7 +661,12 @@ export class CopilotSession {
                   }
                 }
               }
+              if (maybeResumeAction(m)) resumedHere = true;
             }
+            // If the model just triggered a custom action, this "final" item isn't
+            // final — we sent a ResumeInvokeAction and must keep the socket open to
+            // receive the action's result (H-NATIVE-6).
+            if (resumedHere) return;
           }
           ws.close();
           return;
@@ -605,6 +699,10 @@ export class CopilotSession {
                   }
                   if (typeof m.turnCount === "number") turnCountServer = m.turnCount;
                   if (m.turnState) turnState = m.turnState;
+                  // A confirmation TRIGGER for a native action arrives here as a
+                  // messageType'd bot frame (which the plain-chat path drops). Detect
+                  // it and auto-approve on the same socket (H-NATIVE-6).
+                  maybeResumeAction(m);
                 }
                 if (m.author === "bot" && m.text && !m.messageType) {
                   advance(m.text);

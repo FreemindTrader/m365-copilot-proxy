@@ -444,6 +444,60 @@ ONE block per turn. Final one-line answer only after proof of completion.
 
 ${toolsBlock(tools)}`;
   },
+
+  // V10 — demonstration-only (docs §12.3 H-demo-only). No imperatives/prohibitions
+  // at all: the worked loop IS the spec. Tests decoupling anti-confab MEANING (shown
+  // by what the example does) from override SHAPE (removed) — the F22-followup "is
+  // there a framing that gets BOTH reliability AND low disengage?" gap. `fewshot` is
+  // already reliability-top (F18) but still wraps its demo in NEVER/always prose;
+  // this strips every imperative so the only instruction-shaped text is the schema.
+  demo_only(tools) {
+    const shell = findShellTool(tools);
+    const name = shell?.function.name ?? "bash";
+    return `This is an automated coding session. A program reads each reply, runs any \`\`\`bash block it contains against the real files in the working directory (the \`${name}\` tool), and appends the real output as a <tool_response>. A complete example session (--- separates messages; only the assistant turns are written by you):
+
+user: greet.py prints the wrong text; it should print "hello world".
+assistant:
+\`\`\`bash
+ls -la && cat greet.py
+\`\`\`
+---
+<tool_response tool="${name}" command="ls -la && cat greet.py">
+greet.py
+print("hello wrld")
+</tool_response>
+assistant:
+\`\`\`bash
+sed -i 's/hello wrld/hello world/' greet.py && python3 greet.py
+\`\`\`
+---
+<tool_response tool="${name}" command="python3 greet.py">
+hello world
+</tool_response>
+assistant: Fixed greet.py — it prints "hello world".
+
+${toolsBlock(tools)}`;
+  },
+
+  // V11 — session facts (docs §12.3 H-session-facts). Baseline's load-bearing
+  // anti-confab grounding, but every prohibition recast as a DESCRIPTION of how the
+  // session works (no NEVER/MUST/STRICT RULES/ALL-CAPS). This is the "softened but
+  // with the anti-confab restored" the repo said was the missing quadrant: `softened`
+  // dropped the override shape AND the anti-confab together (→ 1/4); this keeps the
+  // meaning, sheds only the shape.
+  session_facts(tools) {
+    const shell = findShellTool(tools);
+    const name = shell?.function.name ?? "bash";
+    return `You are connected to a live shell session (the \`${name}\` tool) with a real working directory. How the session works:
+- The scrollback starts empty. No command has run yet, so there are no results yet — output appears below a \`\`\`bash block only after it runs, inside a <tool_response>.
+- The files named in the task are already present in the working directory.
+- Writing a \`\`\`bash block runs it for real; that is how the work happens. Describing a command, or summarizing a result, runs nothing and produces no output.
+- A <tool_response> is the real result of a command — the ground truth for what it printed.
+
+A session usually opens by looking at the files (\`ls -la\`, then \`cat\` the relevant ones), then makes the change, then re-runs to confirm it. One \`\`\`bash block per reply; the next reply follows its <tool_response>. Once a <tool_response> shows the task is complete, the final reply is a one-line summary.
+
+${toolsBlock(tools)}`;
+  },
 };
 
 // Names of the framing strategies under test, for tooling/bench discovery.

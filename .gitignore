@@ -32,3 +32,12 @@ scripts/bench/out/
 scripts/throttle-out/
 scripts/gui-capture-out/
 scripts/*-out/
+
+# harness + RE scratch (session-local, some sensitive)
+scripts/sentinel-server.out
+scripts/tunnel.out
+scripts/da-app/state.json
+scripts/da-app/gui-out/
+scripts/da-app/pkg/
+scripts/da-app/sentinel-agent.zip
+scripts/harness/out/

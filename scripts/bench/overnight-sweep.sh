@@ -31,7 +31,7 @@ MAX_TURNS="${MAX_TURNS:-12}"
 BACKOFF_BASE="${BACKOFF_BASE:-1800}"    # 30 min first long backoff on throttle streak
 ERR_STREAK_TRIP="${ERR_STREAK_TRIP:-3}" # consecutive ERRORs before a long backoff
 
-IFS=' ' read -r -a STRATS <<< "${STRATS:-baseline minimal recency fewshot proof_demand persona react negative terse reply_tool}"
+IFS=' ' read -r -a STRATS <<< "${STRATS:-baseline softened demo_only session_facts minimal recency fewshot proof_demand persona react negative terse reply_tool}"
 IFS=' ' read -r -a TASKS  <<< "${TASKS:-fix-bug find-needle edit-config}"
 
 # CSV header only if new file

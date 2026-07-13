@@ -92,4 +92,6 @@ export interface CopilotStream {
   turnCount?: number | null;
   /** `Completed` etc. */
   turnState?: string | null;
+  /** True if the model triggered a native custom action this turn (H-NATIVE-6). */
+  sawAction?: boolean;
 }

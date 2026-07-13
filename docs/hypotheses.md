@@ -1698,3 +1698,354 @@ need no license: code interpreter, memory, web grounding, image).
 The genuine, zero-cost wins this session — code interpreter (compute, not egress),
 Claude for plain chat, GPT-5.5, the I/O + cancel work — stand on their own and are
 exactly the right kind of improvement: capability with no license attached.
+
+## 12. Multi-agent research dig (July 13 2026)
+
+Four parallel subagents re-attacked "other ways to get tool calls in/out of M365"
+across four surfaces: native/action APIs, sandbox egress, in-band text encoding, and
+the on-the-wire protocol. Net: **one parked conclusion reopens, one idea is
+re-confirmed dead, and the in-band-encoding win turns out to be a *prompting* win.**
+
+### 12.1 — §8.11's native-tool "CLOSED" verdict was mis-scoped 🟡 REOPENS
+
+§8.11 said "don't re-investigate MCP / full bots / trials — all need a license the
+user base lacks." That is correct **only for the Power-Platform / Dataverse authoring
+path** (Fork A). It does **not** cover the *other* fork §8.10 explicitly logged as
+untested: an **M365 declarative-agent app package** (`declarativeAgent.json` +
+`ai-plugin.json`), sideloaded via the Teams/Agents-Toolkit app-catalog path — a
+different pipeline than `agent.ts::createBot`'s BAP/minimalBots flow. Microsoft's
+current *"agent capabilities by licensing"* table (prerequisites doc, updated
+2026-07-02) puts **Custom actions (API / MCP plugins) in the free "Copilot Chat,
+no usage-based billing" column**; what's metered is *grounding on tenant data*, not
+an outbound action call to an endpoint we host. So a native function-call that fires
+a **real outbound HTTPS request to our proxy** may be free after all.
+
+- **H-NATIVE-1 (highest payoff):** A sideloaded declarative agent with a
+  non-consequential OpenAPI action → Microsoft's orchestrator calls our URL when the
+  model acts. *Test:* serve `scripts/sentinel-server.mjs`'s `/openapi.json` over the
+  existing cloudflared quick tunnel, package a minimal app, sideload, trigger once in
+  the **official Copilot GUI** (positive control), watch `sentinel-hits.log`. The
+  outbound call originates from Microsoft's servers, so a hit ⇒ native action fired.
+- **H-NATIVE-2:** Same, but a `RemoteMCPServer` runtime → orchestrator POSTs
+  `tools/call` to our MCP server; the harness's real tools become native Copilot
+  actions. (Auth the endpoint first — a public bash/write MCP is unauthenticated RCE.)
+- **H-NATIVE-3 (the crux):** Does a sideloaded app-package agent's action loop run
+  over the **proxy's raw substrate WS**, or only in the first-party client? Its id
+  lives in a different namespace than our `T_{titleId}.{botId}.gpt.default` agents.
+  Capture the GUI's WS frames (à la `m365-gui-capture.mjs`) to read the id + the
+  confirm/invoke handshake, then reference it via `CopilotSessionOptions`.
+- **Two real gates (not money):** (a) tenant "Upload custom apps" sideload permission;
+  (b) the free-vs-metered boundary for an *arbitrary external* action endpoint is
+  genuinely ambiguous in the docs. Both resolve in a **~30-min, $0, 0-quota spike**:
+  check admin sideload toggle, publish a trivial action-bearing app, one GUI turn.
+- Refs: extensibility/overview-plugins, /prerequisites (licensing table),
+  /overview-declarative-agent; MCP declarative-agents devblog. §8.10 Fork B is the
+  entry we're finally executing; §8.11's license wall does **not** apply to it.
+
+### 12.2 — Sandbox egress is conclusively dead (do not reopen) ⚫
+
+Two independent lines now agree with §8.11 Fork B: (1) our own probe (5 msgs,
+`GeneratedCode`-confirmed real execution, **0** sentinel hits; netns-level airgap),
+and (2) Microsoft's own security-architecture doc: *"Code interpreter VMs enforce
+strict network controls. They don't allow any inbound or outbound traffic."* DNS
+exfil and pip/allowlist-relay die by the same "no route out" evidence. The Bing
+`searchbyimage` server-side-fetch primitive (real — it's the SearchLeak /
+CVE-2026-42824 & EchoLeak / CVE-2025-32711 mechanism) buys us **nothing**: we already
+read the model's full completion over the WS, so making Bing also fetch the same args
+adds no channel. `HttpRequestAction` (Topics) is real but Fork-A-licensed. **Close
+this line.**
+
+### 12.3 — In-band encoding is a *framing* problem, not a *channel* problem 🟡
+
+The disengage lever is **wording shape** (Prompt Shields scores override-imperatives:
+`NEVER`/`MUST`/`STRICT RULES`/ALL-CAPS), not the output channel; and ` ```bash ` is
+reliability-special (F12 cage theory — the model *acts* through it, not through
+tables/links/YAML, which are display shapes). So swapping channels neither lowers
+disengage nor beats reliability. The unexploited move (the F22-followup "framing that
+gets BOTH" gap): **keep the anti-confab meaning, shed the override shape** — the two
+were deleted *together* in `softened`, which is why it regressed. Two drop-in
+`FRAMING_VARIANTS` (`fenced.ts`) to A/B against `baseline`/`softened` on the overnight
+sweep:
+
+- **H-demo-only:** a worked transcript with **zero** imperatives — the example *shows*
+  turn-1 `ls`+`cat`, no paste-request, no premature "done"; the only instruction-shaped
+  text is the tool schema. `fewshot` is already reliability-top; strip its residual
+  prohibitions → predicted reliability ≈ baseline at disengage ≪ baseline.
+- **H-session-facts:** baseline's anti-confab grounding recast as **descriptive facts
+  about how the session works** ("the scrollback starts empty; the files are already
+  present") instead of prohibitions. `softened`-with-anti-confab-restored.
+- **H-inspect-verbs (Tier 2):** F21 showed the heredoc/`sed -i` file-tamper verbs are
+  themselves part of the disengage weight; lead with inspection + "smallest change."
+  Watch fakeable create tasks for a reliability dip.
+- Channel-swaps (tables, checkboxes, links, YAML, mermaid, citations) assessed
+  **predicted-dead** for reliability; at most one confirming cell for a ` ```json `
+  "structured-output" framing on a non-shell toolset.
+
+### 12.4 — Structured affordances already on the wire that we drop 🔴 cheap probes
+
+- **H-carddrop:** `session.ts:609`'s `if (... && !m.messageType)` guard actively
+  **excludes** any `RenderCardRequest` / `ConfirmationCard` bot frame — exactly the
+  shape a native-action confirm/invoke arrives in (and both are already in
+  `allowedMessageTypes`). We've never captured one because we've never had a real
+  action to trigger it. Pairs with H-NATIVE-1; dump via `M365_DUMP_FRAMES=1`.
+- **H-gptid-stale:** `hypotheses.md`/`m365-copilot-api.md` both claim
+  `gptIdentifiers[].compliantAgentName` is parsed — `grep -rn gptIdentifiers packages/`
+  returns **zero** hits. Dead documentation; 2-line fix + doc correction.
+- `adaptiveCards`, `sourceAttributions`, `suggestedResponses[].commandText` are parsed
+  into the zod object but never read in `handleMsg` — `commandText` (distinct from
+  `text`) may be a machine-executable directive worth diffing in a frame dump.
+- optionsSets/variants named `EnableMcpServerWidgets`, `EnableRequestPlugins`,
+  `EnableCuaTakeControlApi` are suggestive but unverified — `variants-bisect.mjs` cell.
+
+### 12.5 — Experimental results (July 13 2026 execution run)
+
+Ran the H-NATIVE-1 spike. Infra + provisioning proven; the final outbound-call
+oracle is blocked on the Teams install client, not on any licensing/permission wall.
+
+**CONFIRMED 🟢**
+- **The app package is valid.** A declarative agent (`declarativeAgent.json` v1.2) +
+  custom OpenAPI action (`ai-plugin.json` v2.1 → bundled `openapi.json` → our tunnel) +
+  Teams manifest (v1.19) **passes Microsoft's Teams validator with "No issues found."**
+  Builder + probe scripts: `scripts/da-app/` (build-package.mjs, sideload-*.mjs).
+- **Custom-app sideload is NOT gated for this non-admin user.** Teams Developer Portal
+  (`dev.teams.microsoft.com`) imported the package and launched the install deep link
+  (`teams.cloud.microsoft/...installAppPackage=true&source=developerportal`) with **no
+  "contact your admin" / not-allowed block**. This directly contradicts §8.11's premise
+  that native tools require a Copilot Studio license — a *free* declarative agent with a
+  *custom action* imports fine for a regular user. §8.11's wall was the Dataverse/PVA
+  authoring path only; the app-package path is open.
+- **Gate probe** (`scripts/da-app/gate-probe.mjs`): identity AO@re-zip.com, tenant
+  RE-ZIP ApS (`fa7f56d8-…`), **no activated directory role** (regular user), and the
+  proxy's Graph app has no AppCatalog write scope. So **programmatic org-catalog upload
+  (`POST /appCatalogs/teamsApps`) and Graph user-install are both out** — Developer
+  Portal apps don't surface in `/appCatalogs/teamsApps` either (`install-probe.mjs`:
+  0 catalog matches). Sideload must go through the Teams client UI.
+
+**BLOCKED (not disproven) 🟡**
+- The literal proof — Microsoft's orchestrator making the outbound `GET /sentinel` when
+  the agent is triggered — needs the Teams **install "Add" dialog** completed, then a
+  Copilot chat turn against the agent. `teams.cloud.microsoft` **will not render in
+  headless chromium** (ERR_CONNECTION_RESET), and headful-under-Xvfb **exhausted machine
+  memory and crashed the session** (and a second unrelated chromium). This env can't
+  drive the Teams install SPA. Resolution: run the last two clicks in a **real desktop
+  browser** (a 2-minute manual step) or with admin Graph rights — neither is a
+  capability gate, just a client-rendering constraint here. Sentinel oracle stays valid:
+  a hit ⇒ orchestrator called out. Tunnel + `sentinel-server.mjs` left live for a manual
+  trigger; `scripts/da-app/sentinel-agent.zip` is rebuilt against the current tunnel.
+
+**NEW native path — custom engine agents 🟡 (from Microsoft docs, user pointer)**
+- A **custom engine agent** (overview-custom-engine-agent, updated 2026-07-02) routes the
+  Copilot conversation to a **bot messaging endpoint we host** — Microsoft calls OUT to
+  us, so *we* run the orchestration + tool-calling and stream back. Built with the
+  **Microsoft 365 Agents SDK** (pro-code; auto-provisions **Azure Bot Service + Entra ID**),
+  Teams AI Library, Copilot Studio, or Foundry. Requires **app manifest v1.21+**; "bring
+  your own orchestration and models"; cost = hosting + any model consumption (see
+  cost-considerations). Surfaces natively in M365 Copilot + Teams. **Architecture idea:**
+  a custom engine agent whose backend IS this proxy → native tool-calling in the Copilot
+  surface, our own OpenAI-style tool loop, and the free M365 model reached via the proxy
+  for raw completions. Bigger build than H-NATIVE-1 (needs an Azure Bot registration) but
+  it's the cleanest "real tool calls, natively in Copilot" path. Track as **H-NATIVE-5**.
+
+**In-band=prompting (§12.3) 🟢 wired.** `demo_only` + `session_facts` added to
+`FRAMING_VARIANTS` (fenced.ts) and the sweep STRATS; render-verified — both carry **zero
+override-shape tokens** (vs baseline's 4) while keeping the anti-confab meaning (demo
+shows it / facts state it). Reliability + disengage numbers await an overnight sweep on a
+rested account (`M365_MODEL=gpt-5.5-think-deeper`).
+
+### 12.6 — Web-client JS decompile: the WS-native action path 🟢 (biggest lead)
+
+Decompiled 247 bundles from the live `m365.cloud.microsoft/chat` client (bundles in the
+session scratchpad `…/scratchpad/cap/js/pretty/`; reusable live-capture script
+`…/scratchpad/capture-client.mjs`, run with `SEND_MSG=1`). Message-type enum values equal
+their PascalCase names, so each string below is the exact wire value. This reframes native
+actions: **they can be driven over the substrate WS the proxy already speaks — no Teams
+sideload, no admin, no browser.**
+
+- **The confirm→invoke round-trip is pure WS** (verified, `m365chat-llm-web-ui` bundle):
+  server pushes a bot msg `copilotMessageType:"adaptiveCard"`, `layout:"confirmation_trigger"`
+  (a `ConfirmationCard`/`TriggerConfirmation`) carrying `adaptiveCards[]`, `messageId`,
+  `sourceRequestId`, `actionId`, `confirmationMetadata`, `isConsequential`. The client
+  replies **on the same WS** with `{ text, messageType:"ResumeInvokeAction", sourceRequestId,
+  actionId, invokeActionMessages:[<original invoke msg>] }`. The **server-side orchestrator**
+  then makes the real outbound HTTPS call to the action endpoint. → **H-NATIVE-6:** the proxy
+  can attach an action-bearing agent, auto-reply the `ResumeInvokeAction` confirm, and the
+  outbound call fires — all over the existing WS. Blocker today: `session.ts:609`'s
+  `!m.messageType` guard **drops** every `ConfirmationCard`/`RenderCardRequest` frame
+  (confirms H-carddrop) and `allowedMessageTypes` omits the whole action vocabulary
+  (`TriggerPlugin, TriggerConfirmation, ResumeInvokeAction, ResumeUserInputRequest,
+  TriggerUserInputRequest, RenderCardRequest, TriggerExtension, LocalMCPDiscovery`, …).
+- **Inline per-conversation agent attach — no provisioning at all** (the key win): client
+  state `customGptDefinition`/`updateCustomGptDefinition` + a `sideLoadedGpt` slot flow into
+  an **inline `gptDefinitions:[…]`** array in the chat frame (distinct from `gpts:[…]`). A full
+  agent definition can ride **inline in the WS frame** — no catalog id, no Teams/Graph upload.
+  → **H-NATIVE-7:** if the inline def accepts an OpenAPI/`RemoteMCPServer` `actions` spec
+  (strongly implied by the `RegisteredPlugins`/`ScenarioModels` capability shapes, **not yet
+  proven** for an outbound-HTTP action), native custom actions are reachable through the proxy
+  with zero sideloading. **This is the highest-value thing to validate next** — needs one live
+  `SEND_MSG=1` WS capture of the real client using an action-bearing agent to reconstruct the
+  inline-def schema, then replay it via the proxy.
+- Request fields the proxy under-sends: `threadLevelGptId` should include `clientOverrides`
+  (+`version`); `clientOverrides.capabilities:[{name:"CodeInterpreter"|"ScenarioModels"|
+  "RegisteredPlugins", …}]` is the real capability channel (confirms H8.2/H8.3/H8.7);
+  `plugins[]` entries are `{Id, Source, Data:{SerializedOptions}}` with sources
+  `BuiltIn`/`AugmentationLoop`.
+- **Tone note:** real client tones top out at `Gpt_5_{2,3,4}_{Auto,Chat,Reasoning}` +
+  `Claude_Sonnet(_Reasoning)` + a new **`Claude_Fable`**; "Think Deeper" is just the
+  `*_Reasoning` tone (no separate optionsSet — the proxy's tone approach is correct). Missing
+  from `copilot.ts`: the `_Auto` variants and `Claude_Fable` (verify before adding).
+
+### 12.7 — Native-action round-trip IMPLEMENTED + E2E-tested (July 13 2026)
+
+Built the H-NATIVE-6 round-trip in the proxy and tested it live.
+
+**Shipped code (all opt-in behind `CopilotSessionOptions.nativeActions`; default path unchanged):**
+- `packages/core/src/native-actions.ts` — pure, unit-tested (`native-actions.test.ts`, 11
+  tests): `parseActionConfirmation` (detect a `ConfirmationCard`/`TriggerConfirmation`
+  trigger + extract `actionId`/`sourceRequestId`/affirmative `confirmationOption`),
+  `buildResumeInvokeAction` (the `{messageType:"ResumeInvokeAction", …, invokeActionMessages}`
+  reply), `shouldAutoConfirm` (auto-approve read-only actions; gate consequential ones),
+  and `buildNativeActionPrompt` (anti-fabrication native-action instructions).
+- `session.ts` — when `nativeActions` is set: adds the action vocabulary to
+  `allowedMessageTypes`, detects the confirmation trigger in the type-1/type-2 message
+  paths (the frames the `!m.messageType` guard used to silently drop), auto-sends
+  `ResumeInvokeAction` on the same socket (reusing the exact chat envelope), and keeps the
+  socket open for the result. Request-side attach: inline `gptDefinitions[]`,
+  `clientOverrides.capabilities[]`, `plugins[]`. New stream flag `sawAction`.
+- Full suite: **90 passed, 0 fail** (11 new); no regression to the fenced path.
+
+**E2E (real M365, `gpt-5.5-think-deeper`, `scripts/da-app/native-action-ws-probe.mjs`,
+frames dumped):**
+- The native-action-enabled request is **accepted** (no error; throttle 1/600). ✅
+- **Prompt behaves correctly 🟢:** told to call an action it can't see, the model did **not
+  fabricate** a value — it answered *"I can't call getMagicSentinel from the current tool
+  interface, so I can't report the token without guessing."* The anti-fabrication native
+  prompt works; this was the model-behaviour risk and it's clean.
+- **Inline attach (H-NATIVE-7) is the confirmed blocker 🔴:** the best-guess inline
+  `gptDefinitions`/`capabilities`/`plugins` shapes were **ignored** — `contentOrigin` stayed
+  `DeepLeo` (base model, no agent), so the action never registered, nothing triggered the
+  round-trip, no sentinel hit. Exactly the JS-decompile caveat: the inline-def schema is
+  unverified and a guess doesn't take.
+- **Decisive next step:** one live `SEND_MSG=1` WS capture of the real client invoking an
+  action-bearing agent (`…/scratchpad/capture-client.mjs`) to read the exact inline-def /
+  `gptDefinitions` schema, then drop it into `native-action-ws-probe.mjs`. That capture is a
+  **browser** run — must happen on a machine that won't OOM (headful+Xvfb crashed this
+  session twice); a plain headless capture like `m365-gui-capture.mjs` is the light option.
+  Once the schema is right, the round-trip code is already in place to fire end-to-end.
+
+### 12.8 — Decompile of the captured bundles: the map redrawn (July 13 2026)
+
+Studied the 252 captured client bundles directly (no browser). Two decisive results.
+
+**Round-trip is now decompile-EXACT 🟢.** Verified `native-actions.ts` against the real
+`y()` builder (`5267fa4dfe8a.pretty.js:28195`): the `ResumeInvokeAction` message has NO
+top-level `confirmationOption`, and its `text` is the affirmative button's *title*
+(fallbacks: the option string, then `"confirmation response"`). Fixed both (were guesses).
+Enum values equal their names (`ResumeInvokeAction`, `ConfirmationCard`, `TriggerConfirmation`,
+`TriggerPlugin`), author is lowercase `"user"`. Also added the action-gating request flags the
+real client sends and we omitted: `enableConfirmationDialogSkill`, `enableAgentAutoInvoke`,
+`enableMsgExtAuthSkill`, `enablePPCAuthSkill` (`8af68b68f4a2.pretty.js:9373-9378 → :11111`).
+11 unit tests, all green.
+
+**Inline OpenAPI actions are IMPOSSIBLE 🔴 — this kills H-NATIVE-7 as first imagined.**
+Exhaustive grep of all 252 bundles for `run_for_functions`/`openApiSpec`/`apiPluginManifest`/
+`specUrl` → **zero** in any request-builder. The client never sends an OpenAPI spec or URL.
+Custom actions attach **by reference to a pre-registered plugin `Id`** in Microsoft's
+"AugmentationLoop" registry: a capability entry `{name:"RegisteredPlugins", plugins:[{Id,
+Source:"AugmentationLoop", Data:{SerializedOptions}}]}` (`ea503325e841.pretty.js:1306-1323`),
+where `Id` is e.g. `CopilotPlugins.OpenAIPlugin.<guid>`. The spec/operations/auth/consequential
+flags all live in that server-side plugin, resolved from the `Id`. So our E2E miss is
+explained: an inline blob has nowhere to go. The inline `gptDefinitions[0]` (`sideLoadedGpt`
+shape, `02eb2bcc5254.pretty.js:2483-2487`) is `{name, description, gpt_identifier:{id,
+source:"MOS3"}, instructions, "x-experimental_capabilities":[…RegisteredPlugins…]}`, and
+`threadLevelGptId` is sent as `{}` when the def carries capabilities (`8af:12598`).
+
+**Shipping path re-confirmed working 🟢.** `scripts/da-app/shell-tool-e2e.mjs`
+(model `gpt-5.5-think-deeper`, shell-inclusive toolset): turn1 → real `bash` tool_call
+(`ls -la`, finish=`tool_calls`), turn2 → used the tool result. PASS. The native-action code
+is provably inert on this path (all `nativeActions`-gated), so no regression. The earlier
+`proxy-verify --multiturn` prose was the known weak case — a lone `read_file` with NO shell
+tool, so shell-routing (F12) never engages. Takeaway: the proxy works today for the common
+agentic case (a shell tool is present); the shell-less-toolset gap is what the native path
+below closes.
+
+**⇒ Two real native paths remain (H-NATIVE-8/9):**
+- **H-NATIVE-8 — register a plugin server-side, reference by Id.** Provision our OpenAPI
+  action as an AugmentationLoop plugin (the declarative-agent app package we already built +
+  validated is exactly this, once installed), get its `Id`, reference it inline. Downside:
+  static/per-toolset provisioning — a poor fit for a proxy whose tools vary per request.
+- **H-NATIVE-9 — LocalMCP (the proxy-shaped path).** `LocalMCPDiscovery` (a
+  `message.messageAnnotations` type, `8af:12646`) lets the client **declare** a local MCP
+  server's tools to Sydney; Sydney then calls `invokeLocalPlugin` (`0f873dcba625.js`) and the
+  **client executes** the tool. Server descriptor `{id:server_id, name, transport}` +
+  `LocalMCPServerCapabilities` (tools). This maps 1:1 onto the proxy relaying an OpenAI client's
+  `tools`: declare → Sydney requests a call → proxy emits `tool_calls` → client runs it → result
+  back to Sydney. It's gated `enableLocalMCPPlugin` + a desktop-host provider, but we craft WS
+  frames directly, so the gating may not bind server-side. **Full wire protocol (discovery +
+  invocation + result frames) being reconstructed now** — if it works over the raw WS, this is
+  the genuine holy grail: dynamic native tool-calling in the proxy. Also noted:
+  `localPluginAllowedHost` (`8af:12623`), a client-executed local-plugin host allowlist.
+
+### 12.9 — LocalMCP E2E: handshake PROVEN, tool-use is server-flighted (July 13 2026)
+
+Built the full LocalMCP protocol and tested it headless over the raw WS
+(`scripts/da-app/localmcp-probe.mjs`; frame shapes verified against the client's own
+`describeMCPServers`/`getEnabledMCPServers`/`y()` code). Decisive, mixed result.
+
+**PROVEN 🟢 — the discovery+describe handshake works over the raw WS, no desktop host.**
+Sending `{type:1, target:"send", arguments:[{type:"LocalMcpDiscovery", serverIds:["sentinel-mcp"],
+disableDescriptorCache}]}` right after handshake → Sydney replies with hub invocation
+`{type:1, target:"mcp_describe", invocationId:"s128", arguments:[{correlation_id,
+invocation:{payload:"{\"server_ids\":[\"sentinel-mcp\"]}"}}]}` — **it echoes our server_id**, so our
+declaration is registered. We answer the `type:3` completion with the tool schema
+(`response:{status:"Success", payload:JSON.stringify({servers:[{server_id,name,transport,
+tools:[{name,description,inputSchema}],…}]})}`). The proxy is a headless MCP host — the whole
+out-of-band handshake is reachable over the socket the proxy already speaks.
+
+**BLOCKED 🔴 — the tools never enter the model's toolset; `invoke_local_plugin` never fires.**
+Across every client-side lever (3 turns / descriptor caching, `experienceType:"Agent"`, reasoning
+vs chat model, `feature.EnableMcpServerDynamicTools`+`EnableMcpWidgetStreamingMessages` variants)
+the model consistently answers "I don't have access to a getMagicSentinel tool" — one run even said
+it "checked the available tool/skill resources" and ours wasn't among them. **The block is
+server-side** (Sydney pulled our schema but its orchestrator didn't wire the tool into the model),
+but the *cause is not proven.* NOTE (correcting an earlier draft): `enableLocalMCPPlugin` is the
+CLIENT flag that gates client-side discovery — we bypassed the client and Sydney still accepted our
+discovery, so that flag is NOT the blocker. Candidates, none confirmed: (a) a server-side account
+entitlement for local-MCP tool orchestration this tenant lacks; (b) a remaining protocol detail /
+missing field a real successful `mcp_describe` response carries; (c) a timing/ordering requirement
+(schema must land before prompt build). Can't distinguish from the client bundles alone — needs a
+POSITIVE example: a tenant where local-MCP works, or a capture from a real Copilot desktop client
+with an MCP server actually connected (to diff the successful describe exchange).
+
+**⇒ Bottom line for a working proxy.** The dynamic native path (LocalMCP) is real and reachable but
+server-gated per-account — parked pending tenant flighting or a positive-example capture from a
+flighted desktop client. Register-by-Id (H-NATIVE-8) works but is static and needs the app installed.
+**So the shipping route stays the fenced + shell-routing path — confirmed working today (§12.5) for
+shell-inclusive toolsets, which every real harness (pi, openclaw, opencode) provides.** The native
+round-trip code (`native-actions.ts`, decompile-exact, 11 tests) and the LocalMCP probe are in place
+and ready the moment the gate opens; the §12.3 framing variants remain the highest-leverage shipping
+improvement.
+
+### 12.10 — Tool-call test harness (July 13 2026)
+
+Since native tool-calling is license-gated on the free tier (§12.9) and the shipping
+fenced+shell path works but is model/prompt-sensitive, built an **extensive tool-call
+test harness** (`scripts/harness/`) to answer empirically: *which models × system-prompt
+sizes × toolset sizes actually do tool calls correctly through the proxy* — specifically
+to catch the "big system prompt kills tool-calling" failure mode.
+
+- Drives the proxy (in-process `serve.mjs`, no Nitro build) as a real OpenAI tool loop
+  over a Docker sandbox, runs each bench task's objective verifier.
+- Records per cell: **turn-1 compliance** (did it emit a tool call), **solve** (verifier
+  passed), **disengage** (M365 safety-filter 502). `run-cell.mjs` = one cell,
+  `matrix.mjs` = the sweep, `analyze-matrix.mjs` = grid + prompt-size "death curve".
+- Dimensions: model (`MODELS`), prompt size (`prompts/sys_{none,small,medium,large,huge}.txt`,
+  60→26 000 chars, reproducible via `prompts/gen.mjs`), toolset (`lean`/`standard`/`large`
+  = 1/4/12 tools), task (bench `TASKS`). Quota-bounded defaults; scale via env.
+
+**First findings (n=1/cell — illustrative):** `gpt-5.5-think-deeper` = 100% compliance +
+100% solve on `fix-bug` across `none`↔`huge` prompt AND `standard`↔`large` toolset, no
+disengage — robust. Default `m365-copilot` = 100% compliance but 0% solve (calls tools,
+wrong answer). Big prompts did NOT break compliance in these cells; widen the sweep
+(`REPEAT>1`, more tasks/models) to locate where they do. This is the shipping-quality
+instrument the project lacked: reliability is now a number per (model, prompt, toolset).
+See `scripts/harness/README.md`.

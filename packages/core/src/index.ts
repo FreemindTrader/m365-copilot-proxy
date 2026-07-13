@@ -28,7 +28,19 @@ export {
 export {
   CopilotSession,
   type CopilotSessionOptions,
+  type NativeActionConfig,
 } from "./session.js";
+
+export {
+  parseActionConfirmation,
+  buildResumeInvokeAction,
+  shouldAutoConfirm,
+  buildNativeActionPrompt,
+  NATIVE_ACTION_INSTRUCTIONS,
+  ACTION_ALLOWED_MESSAGE_TYPES,
+  ACTION_CONFIRM_MESSAGE_TYPES,
+  type ActionConfirmation,
+} from "./native-actions.js";
 
 export {
   ModelSession,
