@@ -107,17 +107,21 @@ Point [pi](https://pi.dev/) at it via `~/.pi/agent/models.json`:
         "supportsReasoningEffort": false,
         "supportsUsageInStreaming": false
       },
-      "models": [{ "id": "m365-copilot", "name": "M365 Copilot" }]
+      "models": [
+        { "id": "gpt-5.5-think-deeper", "name": "M365 Copilot (GPT-5.5, recommended)" },
+        { "id": "m365-copilot", "name": "M365 Copilot (Auto)" }
+      ]
     }
   }
 }
 ```
 
-Then run pi (keep the toolset lean — M365 "disengages" on very large tool payloads;
-see [docs/m365-copilot-api.md](docs/m365-copilot-api.md#the-disengaged-filter)):
+Then run pi (use `gpt-5.5-think-deeper` — the reliable tool-calling model — and keep the
+toolset lean; M365 "disengages" on very large tool payloads, see
+[docs/m365-copilot-api.md](docs/m365-copilot-api.md#the-disengaged-filter)):
 
 ```sh
-pi --models "m365*" -p --tools read,list,edit,write "your task"
+pi --models "gpt-5.5-think-deeper" -p --tools read,list,edit,write "your task"
 ```
 
 This is verified working end-to-end, including multi-tool calls and real file edits.
@@ -186,19 +190,28 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 
 | Model ID | M365 Tone | Description |
 |---|---|---|
-| `m365-copilot` / `auto` | magic | Default auto-routing |
+| `gpt-5.5-think-deeper` | Gpt_5_5_Reasoning | **Recommended default for agents/tool-calling** — robust tool compliance |
+| `gpt-5.5` / `gpt-5.5-quick` | Gpt_5_5_Chat | GPT-5.5 fast |
+| `m365-copilot` / `auto` | magic | Auto-routing — high-variance at tool-calling (confabulates; see below) |
 | `quick` | Gpt_Quick | Fast responses |
 | `think-deeper` | Gpt_Reasoning | Slower, more thorough |
-| `gpt-5.4` | Gpt_5_4_Reasoning | GPT-5.4 reasoning |
-| `gpt-5.4-quick` | Gpt_5_4_Quick | GPT-5.4 fast |
-| `gpt-5.3` | Gpt_5_3_Quick | GPT-5.3 fast |
-| `gpt-5.3-think-deeper` | Gpt_5_3_Reasoning | GPT-5.3 reasoning |
-| `gpt-5.2` | Gpt_5_2_Quick | GPT-5.2 fast |
-| `gpt-5.2-think-deeper` | Gpt_5_2_Reasoning | GPT-5.2 reasoning |
+| `claude` / `claude-sonnet` | Claude_Sonnet | Real Anthropic Claude (agent-less path) |
+| `claude-sonnet-think-deeper` | Claude_Sonnet_Reasoning | Claude reasoning |
+| `gpt-5.4` / `gpt-5.4-quick` | Gpt_5_4_* | GPT-5.4 |
+| `gpt-5.3` / `gpt-5.3-think-deeper` | Gpt_5_3_* | GPT-5.3 |
+| `gpt-5.2` / `gpt-5.2-think-deeper` | Gpt_5_2_* | GPT-5.2 |
 
-> ⚠️ **For tool calling, use the default or a `*-quick` tone.** The reasoning tones
-> (`*-think-deeper`, bare `gpt-5.x`) route through M365's `DeepLeo` pipeline, which
-> meta-analyzes the injected prompt instead of obeying it and disengages from tools.
+> ✅ **For tool calling, use `gpt-5.5-think-deeper` (the default when no model is sent).**
+> The current agent + fenced/shell-routing path makes this reasoning tone robust —
+> 100% compliance and solve across prompt/toolset sizes on the bench (docs/hypotheses.md
+> §12.10/§12.11). The **default `m365-copilot` (magic) tone is *not* reliable** for
+> tools — it confabulates ("I no longer have access to the filesystem tools") and solves
+> ~0% of real tasks (§12.11); a proxy request with no `model` field already defaults to
+> `gpt-5.5-think-deeper` for this reason.
+>
+> ⚠️ The **older** reasoning tones (`gpt-5.2`/`gpt-5.3`/`gpt-5.4` `*-think-deeper`, bare
+> `think-deeper`) route through M365's `DeepLeo` pipeline, which meta-analyzes the
+> injected prompt and can disengage from tools. Prefer `gpt-5.5-think-deeper`.
 > See [docs/m365-copilot-api.md](docs/m365-copilot-api.md) §5/§10.
 
 ## Authentication

@@ -24,12 +24,15 @@ export {
 export const HEALTH_PAYLOAD = { status: "ok" } as const;
 
 // Window/output hints surfaced to harnesses on /v1/models so they can size
-// context packing and output expectations. Empirically (docs/hypotheses.md F9):
-// M365 accepts ≥500k tokens of input (retrieval-backed) but soft-caps output
-// around ~3k tokens. We advertise a conservative-but-honest 128k window (well
-// within the measured floor) and the ~3k output cap. Override via env.
-const CONTEXT_WINDOW_TOKENS = Number(process.env.M365_CONTEXT_WINDOW) || 128_000;
-const MAX_OUTPUT_TOKENS = Number(process.env.M365_MAX_OUTPUT_TOKENS) || 3_000;
+// context packing and output expectations. These are ADVERTISED hints only — M365
+// enforces its own limits server-side; the number here just stops harnesses from
+// pre-truncating our prompts/output. Empirically (docs/hypotheses.md F9) M365 accepts
+// ≥500k tokens of input (retrieval-backed); the old ~3k output hint made harnesses
+// cap generation far below what a coding turn needs. Advertise a roomy 1M window +
+// 1M output (in line with modern large-context models) so nothing client-side clips.
+// Override via env.
+const CONTEXT_WINDOW_TOKENS = Number(process.env.M365_CONTEXT_WINDOW) || 1_000_000;
+const MAX_OUTPUT_TOKENS = Number(process.env.M365_MAX_OUTPUT_TOKENS) || 1_000_000;
 
 /** Build the OpenAI-compatible `GET /v1/models` payload. */
 export function buildModelsPayload() {

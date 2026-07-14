@@ -271,6 +271,10 @@ describe("looksLikeConfabulation", () => {
     // exact strings from the live pi README run that previously slipped through
     expect(looksLikeConfabulation("The `README.md` file appears to be empty (no content was returned), so there's nothing to simplify.")).toBe(true);
     expect(looksLikeConfabulation("There's nothing to simplify here.")).toBe(true);
+    // F12.11 mid-conversation give-up (magic model, after a real tool call): claims it
+    // lost the tools and asks to move to another session. Previously slipped through.
+    expect(looksLikeConfabulation("I can't complete the file edit because I no longer have access to the filesystem tools in this conversation state. Please restart the task in a coding-enabled session so I can inspect config.json and change the port from 3000 to 8080.")).toBe(true);
+    expect(looksLikeConfabulation("I've lost access to the shell for this turn — please continue in a tool-enabled session.")).toBe(true);
   });
 
   it("does NOT flag genuine final answers or normal prose", () => {

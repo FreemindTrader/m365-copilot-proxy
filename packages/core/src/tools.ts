@@ -255,7 +255,13 @@ const CONFABULATION_PATTERNS: RegExp[] = [
   // ("unable to execute or retrieve any output") and they were absent from the list.
   /(?:unable|not able|can.?t|cannot)\s+(?:to\s+)?(?:access|inspect|list|read|run|execute|retrieve|fetch|locate|see|open)/i,
   /don.?t\s+have\s+access/i,
-  /no\s+access\s+to/i,
+  /no\s+(?:longer\s+have|access\s+to)/i,   // "no access to" + "no longer have access/the tools"
+  /lost\s+(?:access|my\s+access|the\s+ability)/i,
+  // Mid-conversation give-up (F12.11, magic model): after a real tool call it claims
+  // it "no longer has the tools" and asks to move to another session, e.g. "restart the
+  // task in a coding-enabled session". A genuine completion never asks to start over.
+  /(?:restart|start\s+over|begin\s+again|re-?run)\s+(?:the\s+|this\s+)?(?:task|session|conversation|work)\s+in\s+(?:a\s+)?/i,
+  /(?:in|use|switch\s+to|need)\s+(?:a\s+)?(?:different|another|proper|coding-?enabled|tool-?enabled|shell-?enabled)\s+(?:session|environment|conversation|mode)/i,
   /paste\s+(?:the\s+)?(?:contents?|files?|code|them)/i,
   /provide\s+(?:the\s+)?(?:contents?|files?)/i,
   /(?:environment|shell|tool)\s+(?:isn.?t|is not|aren.?t|are not|appears? to be)\s+(?:return|provid|respond|work|access)/i,
