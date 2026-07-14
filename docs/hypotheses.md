@@ -2089,3 +2089,47 @@ larger shipping-quality gap than framing: the default model both disengages *and
 on a trivial edit, while `gpt-5.5-think-deeper` sails through. Strengthens the case to
 **recommend `gpt-5.5-think-deeper` as the default** for real agent use (README currently leads
 with `m365-copilot`/`auto`).
+
+### 12.12 — Framing disengage-rate A/B + confab-fix validation (July 14 2026, live)
+
+Two live tests off §12.11. Account rested throughout (throttle 1-3/600 the whole time;
+all ERRORs below are genuine content-filter Disengaged, not throttle — verified in the
+frame log).
+
+**Test 1 — mid-conversation confab retry now fires 🟢 (fixes the §12.11 gap).** The magic
+model's give-up ("I no longer have access to the filesystem tools…" / "the live file-editing
+tools … are not available to me here. If you open config.json and change…") slipped past the
+confab detector because `looksLikeConfabulation` had no pattern for that shape. Added patterns
+(`no longer have`, `restart the task in a … session`, `tools … are not available`, `can't
+directly edit files`, +tests). Live re-run (`m365-copilot`, edit-config, n=2): **2/2 SOLVED**
+(was 1/2), and the debug log shows the exact recovery chain — `Confabulation detected (no tool
+call) — forcing retry 1/1` → `After forcing retry: hasToolCalls=true` → SOLVED. Caveat: magic
+confab is open-ended (each run invents a new phrasing); this is a best-effort net, not a
+guarantee — the real fix is the default-model change (below), which the README now makes.
+
+**Test 2 — first-try disengage rate by framing 🟢 (confirms §12.3/§12.11 thesis).** Ran the 4
+called-out variants on the substitution-prone `edit-config` with **`M365_NO_DISENGAGE_RETRY=1`**
+(so a Prompt-Shields trip surfaces as a 502 instead of being masked by the softened-retry),
+`gpt-5.5-think-deeper`, 2 rounds with **rotated order** to control order effects:
+
+| variant | first-try disengage rate (n=2) |
+|---|---|
+| `baseline` (strong override-shape) | **2/2 = 100%** |
+| `session_facts` | 1/2 = 50% |
+| `demo_only` | **0/2 = 0%** |
+| `softened` | **0/2 = 0%** |
+
+⇒ **The override-shape IS the disengage lever, cleanly (F22 re-confirmed by construction):**
+baseline trips 100%, shedding it drops to 0%. This is exactly the tax §12.11 found the
+softened-retry hiding — on the shipped `baseline` default, every substitution-shaped edit pays a
+disengage + a fresh-conversation retry. **`demo_only` is the leading candidate to replace
+`baseline` as the default framing:** 0% disengage here *and* it's the reliability-preserving
+"worked-transcript, zero-imperatives" variant (solved every reliability cell in the §12.11
+pilot), whereas `softened` (also 0%) carries the known confab regression that keeps it a
+retry-only fallback.
+
+**Next (before flipping the default):** confirm `demo_only` holds reliability at `--repeat ≥3`
+across `fix-bug` + a confab-prone/shell-less task (softened's failure case), on both
+`gpt-5.5-think-deeper` and the magic model. If it holds, switch the default framing baseline→
+demo_only and the whole disengage→softened-retry round-trip becomes dead weight for the common
+case. n here is only 2 — strong signal, not yet ship-grade.

@@ -262,6 +262,10 @@ const CONFABULATION_PATTERNS: RegExp[] = [
   // task in a coding-enabled session". A genuine completion never asks to start over.
   /(?:restart|start\s+over|begin\s+again|re-?run)\s+(?:the\s+|this\s+)?(?:task|session|conversation|work)\s+in\s+(?:a\s+)?/i,
   /(?:in|use|switch\s+to|need)\s+(?:a\s+)?(?:different|another|proper|coding-?enabled|tool-?enabled|shell-?enabled)\s+(?:session|environment|conversation|mode)/i,
+  // "the live file-editing tools ... are not available to me here" (magic model, F12.11):
+  // it claims its own tools are gone, then delegates the edit back to the user.
+  /(?:tool|editor|shell|command|file-?editing)s?[^.\n]{0,40}\b(?:not\s+available|unavailable|aren.?t\s+available|isn.?t\s+available|are\s+not\s+accessible)/i,
+  /(?:can.?t|cannot|not\s+able\s+to|unable\s+to)\s+(?:directly\s+)?(?:edit|modify|write\s+to|change|save|create|open)\s+(?:the\s+|any\s+|to\s+)?files?/i,
   /paste\s+(?:the\s+)?(?:contents?|files?|code|them)/i,
   /provide\s+(?:the\s+)?(?:contents?|files?)/i,
   /(?:environment|shell|tool)\s+(?:isn.?t|is not|aren.?t|are not|appears? to be)\s+(?:return|provid|respond|work|access)/i,
