@@ -2049,3 +2049,43 @@ wrong answer). Big prompts did NOT break compliance in these cells; widen the sw
 (`REPEAT>1`, more tasks/models) to locate where they do. This is the shipping-quality
 instrument the project lacked: reliability is now a number per (model, prompt, toolset).
 See `scripts/harness/README.md`.
+
+### 12.11 — Framing A/B pilot: baseline still trips Prompt Shields; the bench SOLVED metric HIDES it (July 14 2026)
+
+Ran the §12.3 framing variants live for the first time (the variants were coded in
+`fenced.ts` but never swept). One long-lived proxy, per-request variant switching via
+`M365_FRAMING_FILE`, `gpt-5.5-think-deeper`, `--repeat 1` (n=1 — directional only).
+Account rested throughout (all threads clean; no thread-throttle).
+
+**Reliability axis — saturated, can't discriminate.** All four called-out variants
+(`baseline`, `softened`, `demo_only`, `session_facts`) SOLVED `fix-bug` **and**
+`edit-config` identically (2 tool-calls, 3 msgs, ~15-21s). On the SOLVED metric alone
+they're indistinguishable — including `softened`, which §12.3 says regressed to 1/4 on
+the confab task. `fix-bug`/`edit-config` on gpt-5.5 are too easy to separate framings.
+
+**The real finding: the bench SOLVED column MASKS disengage 🟢.** The debug log shows
+`baseline` on `edit-config` **did** trip Prompt Shields — `[handler] Upstream Disengaged
+— retrying once with 'softened' framing` fired (15:46:33, inside the ec-baseline run) — and
+the built-in **F22 softened-retry silently recovered it to SOLVED**. `session_facts` on the
+same task **did not** disengage (direct SOLVED, no retry log). So §12.3's thesis is
+**supported at n=1**: shedding the override-shape (`session_facts`) avoids the Prompt-Shields
+trip that `baseline` still pays (a wasted disengage + a fresh-conversation retry ≈ +1 thread,
++latency). The bench's SOLVED/pct metric can't see this because the retry masks it — and the
+harness (§12.10) can't either, since a recovered retry returns HTTP 200, not a 502.
+
+⇒ **Methodology fix for the real A/B:** measure **first-try disengage rate**, not
+SOLVED-after-retry. Run the variants with **`M365_NO_DISENGAGE_RETRY=1`** (flag exists,
+`handler.ts:295`) on the disengage-prone `edit-config`/`ec-*` family at `--repeat ≥3`, and
+score the disengage count per variant. That is the confirmatory sweep §12.3 has been waiting
+for; it needs Alex's go-ahead on quota (4 variants × ~2 tasks × repeat 3 ≈ 24 fresh threads,
+and it deliberately provokes the filter).
+
+**Second finding: the DEFAULT model's failure mode is confab, not disengage 🟢.** `m365-copilot`
+(magic) on `edit-config` → `baseline` disengaged → softened-retry → **GAVE_UP_PROSE**: *"I no
+longer have access to the filesystem tools in this conversation state. Please restart the
+task…"* (a mid-conversation confabulation after one successful tool-call; the `M365_CONFAB_RETRIES`
+detector did not rescue it). This matches §12.10's "default m365-copilot = 0% solve" and is the
+larger shipping-quality gap than framing: the default model both disengages *and* confabulates
+on a trivial edit, while `gpt-5.5-think-deeper` sails through. Strengthens the case to
+**recommend `gpt-5.5-think-deeper` as the default** for real agent use (README currently leads
+with `m365-copilot`/`auto`).
