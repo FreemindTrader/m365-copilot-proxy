@@ -80,6 +80,7 @@ export class ModelSession {
    * cancelled by sending M365's Stop frame, mirroring the real UI's Stop button.
    */
   async run(text: string, model: string = "m365-copilot", signal?: AbortSignal, useAgent: boolean = true): Promise<CopilotStream> {
+  
     const token = await this.resolveToken();
     const wantAgent = this.useAgent && useAgent;
 
