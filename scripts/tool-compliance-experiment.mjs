@@ -115,8 +115,9 @@ ${userMsg}
 const VARIANT_NAMES = ["baseline", "no_caps", "no_fewshot", "with_reply", "minimal", "tool_choice_req"];
 const VARIANTS = VARIANTS_FILTER.length ? VARIANT_NAMES.filter((v) => VARIANTS_FILTER.includes(v)) : VARIANT_NAMES;
 
-function classify(raw, expect) {
-  const parsed = parseToolCalls(raw);
+function classify(raw, expect, variant) {
+  const tools = variant === "with_reply" ? [REPLY_TOOL, ...TOOLS] : TOOLS;
+  const parsed = parseToolCalls(raw, tools);
   const got = parsed.hasToolCalls ? parsed.toolCalls[0].function.name : null;
   const stray = (parsed.textContent || "").trim().length;
   const disengaged = raw.length === 0;
@@ -157,7 +158,7 @@ for (const variant of VARIANTS) {
       } catch (e) {
         raw = `<error: ${e.message}>`;
       }
-      const verdict = classify(raw, p.expect);
+      const verdict = classify(raw, p.expect, variant);
       if (verdict === "DISENGAGED") disengaged++;
       const elapsed = Date.now() - t0;
       const summary = { q: p.q, expect: p.expect, rep, verdict, elapsed_ms: elapsed, throttle, scores, contentOrigin, len: raw.length, raw: raw.slice(0, 240).replace(/\n/g, "\\n") };
