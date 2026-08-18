@@ -21,7 +21,8 @@ const AGENT_DESCRIPTION = "Auto-created agent for tool calling";
 // updated in place (the Copilot Studio update API needs a changeToken that is
 // only returned by create). So we version the agent by NAME: the name carries a
 // short hash of the current instructions. Change the instructions -> new name ->
-// a fresh agent is created and stale versions are cleaned up. Hosts sharing a
+// a fresh agent is created while stale versions are retained to avoid
+// disrupting other proxy instances that may still be using them. Hosts sharing a
 // tenant independently compute the same name for the same instructions, so they
 // converge on one agent with no coordination. (Verified empirically: Copilot
 // Studio reflects displayName -> shortBotName byte-for-byte, hyphens intact.)
@@ -65,10 +66,8 @@ The runtime returns the real result in a <tool_response> block — treat it as g
 When the message has no <tools> block, respond normally as a helpful assistant in natural language.`;
 }
 
-async function getEnvironmentUrl(
-  ppToken: string,
-): Promise<string> {
-
+async function getEnvironmentUrl(ppToken: string): Promise<string> {
+  // Query BAP API to discover the default environment
   const res = await fetch(
     `${BAP_API}/providers/Microsoft.BusinessAppPlatform/environments/~default?api-version=2023-06-01`,
     {
@@ -79,42 +78,48 @@ async function getEnvironmentUrl(
   );
 
   if (!res.ok) {
-    throw new Error(
-      `BAP API failed: ${res.status} ${await res.text()}`
-    );
+    throw new Error(`BAP API failed: ${res.status} ${await res.text()}`);
   }
 
   const data = await res.json();
-
-  log.info(
-    "[env] " + JSON.stringify(data, null, 2)
-  );
-
-  const envName: string = data.name;
-
+  const envName: string = data.name; // e.g. "Default-fa7f56d8-49c4-4327-b816-9a0eeaa273df"
   const envId = envName
     .replace(/^Default-/i, "")
     .replace(/-/g, "")
     .toLowerCase();
 
+  // Power Platform splits the environment ID across TWO DNS labels: everything but
+  // the last two characters, then those two characters as a label of their own.
+  //
+  // This used to hardcode `.df.` as that second label, which resolves only for
+  // tenants whose env ID happens to end in "df" — the maintainer's does, so the
+  // old fallback candidate landed on the right host by coincidence and the bug
+  // stayed invisible here while provisioning failed outright for everyone else.
+  // Found by @FreemindTrader (#8); confirmed live: for an ID ending "df" both
+  // forms reach the same host (200, identical bot list), for any other ending the
+  // hardcoded form produces two names that don't resolve at all.
   if (envId.length < 3) {
-    throw new Error(
-      `Unexpected environment ID: ${envId}`
-    );
+    throw new Error(`Unexpected Power Platform environment ID: ${envId}`);
   }
-
-  const suffix = envId.slice(-2);
-  const hostPart = envId.slice(0, -2);
-
   const url =
-    `https://default${hostPart}` +
-    `.${suffix}` +
+    `https://default${envId.slice(0, -2)}.${envId.slice(-2)}` +
     `.environment.api.powerplatform.com`;
 
-  log.info(
-    `[env] derived environment URL=${url}`
-  );
-
+  try {
+    // Any response at all (401/403 included) proves the host resolved; we only
+    // care about DNS here, not authorization.
+    await fetch(`${url}/copilotstudio/minimalBots/api?api-version=2024-10-01`, {
+      method: "HEAD",
+      headers: { Authorization: `Bearer ${ppToken}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    log.info(`Resolved environment URL: ${url}`);
+  } catch {
+    // Not fatal: the derivation is the documented convention, so a failed probe
+    // is more likely a transient network blip than a wrong name. Surface it and
+    // let the real call produce the actionable error.
+    log.info(`Environment URL did not resolve on probe, using anyway: ${url}`);
+  }
   return url;
 }
 
@@ -139,189 +144,85 @@ function saveCachedAgent(data: CachedAgent): void {
   writeFileSync(AGENT_CACHE_FILE, JSON.stringify(data, null, 2));
 }
 
-
-export async function ppFetch(
+async function ppFetch(
   url: string,
   token: string,
-  init: RequestInit = {},
+  options: RequestInit = {},
 ): Promise<Response> {
-  
-  log.info(`[ppFetch] BEGIN method=${init.method ?? "GET"} url=${url}`);
-
-  const started = Date.now();
-
-  try {
-    const res = await fetch(url, {
-      ...init,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ...(init.headers ?? {}),
-      },
-    });
-
-    log.info(`[ppFetch] OK status=${res.status} elapsed=${Date.now() - started}ms`);
-
-    return res;
-  } catch (err: any) {
-    log.error(`[ppFetch] FAILED url=${url}`);
-    log.error(`[ppFetch] elapsed=${Date.now() - started}ms`);
-    log.error(`[ppFetch] message=${err?.message}`);
-    log.error(`[ppFetch] cause=${err?.cause?.message ?? ""}`);
-    log.error(`[ppFetch] stack=${err?.stack ?? ""}`);
-
-    throw err;
-  }
+  return fetch(url, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      "x-ms-user-agent": "PVA-Portal/1.0.0 (Web; ReactNative: false)",
+      ...(options.headers as Record<string, string>),
+    },
+  });
 }
-
 
 async function listBots(
   envUrl: string,
   token: string,
 ): Promise<Array<{ botId: string; shortBotName: string }>> {
-
-  const url =
-    `${envUrl}/copilotstudio/minimalBots/api` +
-    `?api-version=2024-10-01` +
-    `&creationSource=AgentBuilder` +
-    `&sortby=LastModifiedAt`;
-
+  const url = new URL("/copilotstudio/minimalBots/api", envUrl);
+  url.searchParams.set("api-version", "2024-10-01");
+  url.searchParams.set("creationSource", "AgentBuilder");
+  url.searchParams.set("sortby", "LastModifiedAt");
 
   const started = Date.now();
+  const controller = new AbortController();
+  const timeoutMs = 30000;
 
-  log.info(`[listBots] URL=${url}`);
-  log.info(`[listBots] tokenLength=${token?.length ?? 0}`);
-  log.info(`[listBots] FETCH BEGIN`);
+  log.info(`[listBots] GET ${url}`);
+
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   let res: Response;
 
   try {
-
-    const controller = new AbortController();
-
-    const timeoutMs = 30000;
-
-    const timeout = setTimeout(() => {
-      log.error(
-        `[listBots] ABORTING after ${timeoutMs}ms`
-      );
-
-      controller.abort();
-    }, timeoutMs);
-
-    try {
-
-      res = await ppFetch(
-        url,
-        token,
-        {
-          signal: controller.signal,
-        },
-      );
-
-    } finally {
-      clearTimeout(timeout);
-    }
-
-    log.info(
-      `[listBots] FETCH OK ` +
-      `status=${res.status} ` +
-      `statusText=${res.statusText} ` +
-      `elapsed=${Date.now() - started}ms`
-    );
-
-  } catch (err: any) {
+    res = await ppFetch(url.toString(), token, {
+      signal: controller.signal,
+    });
+  } catch (error: unknown) {
+    const err = error as Error & {
+      code?: string;
+      cause?: { message?: string };
+    };
 
     log.error(
-      `[listBots] FETCH FAILED`
+      `[listBots] request failed ` +
+        `name=${err.name || "UnknownError"} ` +
+        `message=${err.message || String(error)} ` +
+        `cause=${err.cause?.message ?? ""} ` +
+        `code=${err.code ?? ""} ` +
+        `elapsed=${Date.now() - started}ms`,
     );
 
-    log.error(
-      `[listBots] message=${err?.message}`
-    );
-
-    log.error(
-      `[listBots] name=${err?.name}`
-    );
-
-    log.error(
-      `[listBots] cause=${err?.cause?.message ?? ""}`
-    );
-
-    log.error(
-      `[listBots] code=${err?.code ?? ""}`
-    );
-
-    log.error(
-      `[listBots] elapsed=${Date.now() - started}ms`
-    );
-
-    log.error(
-      `[listBots] stack=${err?.stack ?? ""}`
-    );
-
-    throw err;
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
+
+  const elapsed = Date.now() - started;
 
   if (!res.ok) {
-
-    const headers =
-      Object.fromEntries(res.headers.entries());
-
-    const body =
-      await res.text();
+    const body = await res.text();
+    const headers = Object.fromEntries(res.headers.entries());
 
     log.error(
-      `[listBots] HTTP ERROR status=${res.status}`
+      `[listBots] HTTP ${res.status} ${res.statusText} ` +
+        `elapsed=${elapsed}ms ` +
+        `headers=${JSON.stringify(headers)} ` +
+        `body=${body}`,
     );
 
-    log.error(
-      `[listBots] RESPONSE HEADERS=${JSON.stringify(
-        headers,
-        null,
-        2,
-      )}`
-    );
-
-    log.error(
-      `[listBots] BODY=${body}`
-    );
-
-    throw new Error(
-      `Failed to list bots: ${res.status} ${body}`
-    );
+    throw new Error(`Failed to list bots: ${res.status} ${body}`);
   }
 
-  const headers =
-    Object.fromEntries(res.headers.entries());
-
-  log.info(
-    `[listBots] RESPONSE HEADERS=${JSON.stringify(
-      headers,
-      null,
-      2,
-    )}`
-  );
-
-  const json = await res.json();
-
-  log.info(
-    `[listBots] RESPONSE JSON=${JSON.stringify(
-      json,
-      null,
-      2,
-    )}`
-  );
-
-  return json;
+  return res.json();
 }
 
-
-
-async function createBot(
-  envUrl: string,
-  token: string,
-): Promise<{ botId: string }> {
-
+async function createBot(envUrl: string, token: string): Promise<{ botId: string }> {
   const body = {
     botComponentChanges: [
       {
@@ -367,8 +268,7 @@ async function createBot(
               useModelKnowledge: true,
             },
           },
-          schemaName:
-            "00000000-0000-0000-0000-000000000000.gpt.default",
+          schemaName: "00000000-0000-0000-0000-000000000000.gpt.default",
           $kind: "GptComponent",
           description: AGENT_DESCRIPTION,
         },
@@ -393,63 +293,44 @@ async function createBot(
       diagnostics: [],
       displayName: getAgentName(),
       language: 1033,
-      schemaName:
-        "00000000-0000-0000-0000-000000000000",
+      schemaName: "00000000-0000-0000-0000-000000000000",
       template: "gpt-1.1.0",
       $kind: "BotEntity",
       iconBase64: BOT_ICON_BASE64,
     },
   };
 
-  const res = await ppFetch(
-    `${envUrl}/copilotstudio/minimalBots/api?api-version=2024-10-01`,
-    token,
-    {
-      method: "POST",
-      headers: {
-        "x-ms-client-name": "AgentBuilder",
-        "x-ms-environment-id": "~default",
-      },
-      body: JSON.stringify(body),
+  const url = `${envUrl}/copilotstudio/minimalBots/api?api-version=2024-10-01`;
+  const res = await ppFetch(url, token, {
+    method: "POST",
+    headers: {
+      "x-ms-client-name": "AgentBuilder",
+      "x-ms-environment-id": "~default",
     },
-  );
+    body: JSON.stringify(body),
+  });
 
   if (!res.ok) {
-    const text = await res.text();
-
-    log.error(
-      `[createBot] status=${res.status} body=${text}`
-    );
-
-    throw new Error(
-      `Failed to create bot: ${res.status} ${text}`
-    );
+    const responseBody = await res.text();
+    log.error(`[createBot] HTTP ${res.status} ${res.statusText} body=${responseBody}`);
+    throw new Error(`Failed to create bot: ${res.status} ${responseBody}`);
   }
 
   const data = await res.json();
-
-  log.info( `[createBot] response=${JSON.stringify(data, null, 2)}`);
-
-  log.info(
-    `[createBot] typeof=${typeof data} isArray=${Array.isArray(data)}`
-  );
-
-  let botId: string | undefined;
-
-  if (Array.isArray(data)) {
-    botId = data[0]?.botId;
-  } else {
-    botId =
-      data?.bot?.schemaName ??
+  const botId = Array.isArray(data)
+    ? data[0]?.botId
+    : data?.bot?.schemaName ??
       data?.bot?.cdsBotId ??
       data?.botId ??
       data?.id;
+
+  if (typeof botId !== "string" || botId.length === 0) {
+    log.error(`[createBot] response did not contain a bot ID: ${JSON.stringify(data)}`);
+    throw new Error("Failed to create bot: response did not contain a bot ID");
   }
 
-  log.info(`[createBot] botId=${botId}`);
-
+  log.info(`[createBot] created botId=${botId}`);
   return { botId };
-
 }
 
 async function publishBot(
