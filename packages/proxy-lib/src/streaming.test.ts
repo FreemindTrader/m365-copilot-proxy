@@ -298,7 +298,12 @@ describe("the only-the-first-call-ran note", () => {
       "Done.",
     ]);
     expect(sent).toHaveLength(3);
-    expect(sent[1].startsWith(NOTE)).toBe(true);
+    // Always-reinject: the <tools> block rides ahead of the note on every
+    // tool-enabled delta turn, so the note is no longer the FIRST text —
+    // but it is still prepended ahead of the delta.
+    expect(sent[1]).toContain("<tools>");
+    expect(sent[1]).toContain(NOTE);
+    expect(sent[1].indexOf("<tools>")).toBeLessThan(sent[1].indexOf(NOTE));
     expect(sent[1]).toContain("real output 0");
     expect(sent[2]).not.toContain("(Note:"); // once only: turn 2 was executed in full
   });

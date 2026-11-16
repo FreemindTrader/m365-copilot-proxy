@@ -162,7 +162,7 @@ export function formatToolResponse(m: Message, history: Message[]): string {
  * Tradeoff: adds 1 tool to the prompt, which nudges the Disengaged-filter
  * threshold a tiny bit. Safe with lean toolsets (<= ~10 tools).
  */
-function maybeInjectReplyTool(tools: ToolDef[]): ToolDef[] {
+export function maybeInjectReplyTool(tools: ToolDef[]): ToolDef[] {
   const enabled = process.env.M365_INJECT_REPLY_TOOL || currentFramingVariant() === "reply_tool";
   if (!enabled) return tools;
   if (tools.some((t) => t.function.name === "reply")) return tools;

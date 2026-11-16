@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   ModelSession,
   type ModelSessionOptions,
@@ -26,6 +27,8 @@ import {
   secondsUntilReset,
   type PriorityAccessExhaustion,
   formatMessages,
+  formatToolsBlock,
+  maybeInjectReplyTool,
   imageUrls,
   parseToolCalls,
   looksLikeConfabulation,
@@ -154,6 +157,14 @@ interface ConversationState {
    *  Opus fallback, #18) can't continue the M365 conversation — it may need
    *  another scenario — so it starts a fresh one with the full history. */
   servedModel?: string;
+  /** Diagnostics only. The session-pool fingerprint this state was resolved
+   *  under, surfaced in the [TOOLS] log line. Never read for routing. */
+  fingerprint?: string;
+  /** Diagnostics only. sha256 (first 16 hex chars) of the <tools> block most
+   *  recently serialized for this conversation, so a toolset change (same
+   *  names, different definitions) shows up in the logs. Never read for
+   *  routing — the fingerprint already separates distinct tool NAME sets. */
+  lastToolHash?: string;
 }
 
 /**
@@ -228,6 +239,7 @@ export class SessionPool {
         existing.pendingNote = null;
       }
       existing.lastAccessedAt = Date.now();
+      existing.fingerprint = fingerprint;
       return existing;
     }
 
@@ -238,6 +250,7 @@ export class SessionPool {
       sentMessageCount: 0,
       pendingNote: null,
       lastAccessedAt: Date.now(),
+      fingerprint,
     };
     this.conversations.set(fingerprint, state);
     return state;
@@ -352,6 +365,36 @@ export async function handleChatCompletion(
   const hasTools = body.tools && body.tools.length > 0 && body.tool_choice !== "none";
   const requestedModel = body.model;
 
+  // --- Always-reinject tool definitions (OpenAI tool semantics) ---
+  // A request that carries `tools` (and tool_choice != "none") must present the
+  // definitions to M365 on EVERY turn, not just turn 1. M365 is stateful and the
+  // delta path sends only the new messages, so without reinjection the turn-1
+  // framing is the ONLY statement of the toolset in the whole M365 conversation —
+  // after enough turns the model reports "the current message does not contain a
+  // definition block" and tool calling degrades. Serialize the SAME shared
+  // <tools> block (formatToolsBlock — the identical serializer the turn-1
+  // framing embeds) once per request and prepend it to every follow-up prompt:
+  // the delta itself, the "Please continue." nudge, and the forcing retries.
+  // Turn 1 needs no prepend — formatMessages already carries the block inside
+  // its framing. Requests WITHOUT tools, or with tool_choice="none", never
+  // inject (toolReinjectPrefix stays empty).
+  const effectiveTools = hasTools ? maybeInjectReplyTool(body.tools!) : body.tools;
+  const toolsBlockText = hasTools ? formatToolsBlock(effectiveTools!) : "";
+  const toolReinjectPrefix = hasTools ? `${toolsBlockText}\n\n` : "";
+  // Diagnostics: sha256 of the serialized block, so a toolset change (same
+  // names, different definitions — descriptions can carry per-turn text) is
+  // visible in the logs. Never used for routing or session affinity.
+  const toolHash = hasTools
+    ? createHash("sha256").update(toolsBlockText).digest("hex").slice(0, 16)
+    : undefined;
+  if (hasTools) {
+    if (conv.lastToolHash && conv.lastToolHash !== toolHash) {
+      log.info(`[TOOLS] conv=${conv.fingerprint} toolset changed: ${conv.lastToolHash} -> ${toolHash} — re-serializing definitions`);
+    }
+    conv.lastToolHash = toolHash;
+    log.info(`[TOOLS] conv=${conv.fingerprint} turn=${session.turnCount} tools=${body.tools!.length} injected=YES bytes=${toolsBlockText.length} hash=${toolHash}`);
+  }
+
   // Priority access (§15, §24 F55, §26, issue #18). Once a budget is used up
   // every turn on it is refused until the reset, so don't start one: serve the
   // opt-in fallback model (M365_OPUS_FALLBACK_MODEL, e.g. the unmetered
@@ -421,16 +464,20 @@ export async function handleChatCompletion(
     inputImages = imageUrls(newMessages);
     const delta = newMessages.length > 0 ? formatDeltaMessages(newMessages, body.messages) : "";
     if (delta.length > 0) {
-      text = delta;
+      // Always-reinject: the <tools> block rides ahead of the delta on every
+      // tool-enabled follow-up turn (toolReinjectPrefix is empty without tools).
+      text = `${toolReinjectPrefix}${delta}`;
       // Only a tool result is the thing the note corrects the model about.
       if (conv.pendingNote && newMessages.some((m) => m.role === "tool")) {
-        text = `${conv.pendingNote}\n\n${delta}`;
+        text = `${toolReinjectPrefix}${conv.pendingNote}\n\n${delta}`;
         log.info("Prepended the only-the-first-call-ran note (last reply was partly executed)");
       }
       log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, new=${newMessages.length}, turn=${session.turnCount}, mode=delta, cid=${convId}`);
     } else {
-      // No meaningful new content to send — nudge M365 to continue.
-      text = "Please continue.";
+      // No meaningful new content to send — nudge M365 to continue. The <tools>
+      // block rides along too: it is still an outbound prompt of a tool-enabled
+      // conversation, and "every turn, no exceptions" includes this one.
+      text = `${toolReinjectPrefix}Please continue.`;
       log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=retry, cid=${convId}`);
     }
   }
@@ -736,7 +783,9 @@ export async function handleChatCompletion(
         }
         log.info(`Empty upstream response, quick retry in ${SHORT_RETRY_DELAY_MS / 1000}s (attempt ${attempt + 1}/${MAX_RETRIES})`);
         await new Promise(r => setTimeout(r, SHORT_RETRY_DELAY_MS));
-        text = "Please continue."; // M365 already has context
+        // Always-reinject: this nudge is also an outbound prompt of a
+        // tool-enabled conversation.
+        text = `${toolReinjectPrefix}Please continue.`; // M365 already has context
       } else {
         // A model served only on a premium account, on a non-premium one (Opus
         // 4.8: BotConnection, `InternalError`, every time, with the agent and
@@ -815,9 +864,12 @@ export async function handleChatCompletion(
       if (!confab && !remoteArtifact && !halluc) break;
       const retryKind = remoteArtifact ? "Remote artifact completion" : confab ? "Confabulation" : "Hallucinated completion";
       log.info(`${retryKind} detected (no tool call) — forcing retry ${attempt + 1}/${maxConfabRetries}`);
-      text = remoteArtifact ? REMOTE_ARTIFACT_FORCE_PROMPT
+      const forcePrompt = remoteArtifact ? REMOTE_ARTIFACT_FORCE_PROMPT
         : confab ? (everActed ? MIDTASK_FORCE_PROMPT : CONFAB_FORCE_PROMPT)
         : HALLUCINATION_FORCE_PROMPT;
+      // Always-reinject: a forcing retry is still an outbound prompt of a
+      // tool-enabled conversation — carry the definitions.
+      text = `${toolReinjectPrefix}${forcePrompt}`;
       const retry = await runBuffered();
       if ("error" in retry) return { kind: "error", resp: retry.error };
       conv.sentMessageCount = body.messages.length;

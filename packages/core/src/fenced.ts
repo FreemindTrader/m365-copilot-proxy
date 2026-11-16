@@ -293,6 +293,22 @@ export function formatFencedToolDefinitions(tools: ToolDef[], variantOverride?: 
   return build(tools) + hostPlatformNote(findShellTool(tools), undefined, findWriteTool(tools));
 }
 
+/** The shared `<tools>` block on its own — the same serializer every framing
+ *  variant embeds on turn 1, composed from the same helpers
+ *  (toolsBlock + hostPlatformNote). No framing prose.
+ *
+ *  Used by the handler's delta path to REINJECT the definitions on every
+ *  follow-up turn (always-reinject): M365 is stateful, so a delta carries only
+ *  the new messages, and without this the `<tools>` block from turn 1 is the
+ *  only statement of the toolset the model ever sees — after enough turns it
+ *  reports "the current message does not contain a definition block" and tool
+ *  calling degrades. OpenAI tool semantics: `tools` in the request +
+ *  `tool_choice != "none"` ⇒ the definitions appear in EVERY outbound prompt.
+ *  NOT a second serialization path — the identical `toolsBlock()` renders both. */
+export function formatToolsBlock(tools: ToolDef[]): string {
+  return toolsBlock(tools) + hostPlatformNote(findShellTool(tools), undefined, findWriteTool(tools));
+}
+
 /** Which dialect the harness's shell tool actually speaks.
  *
  *  `process.platform` cannot answer this — it describes the host, and on Windows
