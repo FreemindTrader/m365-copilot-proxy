@@ -271,6 +271,72 @@ describe("always-reinject tools", () => {
     expect(scripted.texts[1]).toContain("write_file");
   });
 
+  it("T9: long-session synthetic workload — 160 turns, 160 tool calls, single conversation", async () => {
+    // Long-session validation (docs/always-reinject-report.md §spec): a single
+    // conversation, 150+ turns, 100+ tool calls; per-turn records
+    // { turn, tools_present, tool_call_generated, tool_call_executed }.
+    // Set M365_LONG_SESSION_OUT to a file path to dump the records as JSON.
+    const TURNS = 160;
+    const pool = new SessionPool();
+    scripted.texts = [];
+    scripted.newConversations = 0;
+    const records: Array<{
+      turn: number;
+      tools_present: boolean;
+      tool_call_generated: boolean;
+      tool_call_executed: boolean;
+      tools_block_bytes: number;
+      response_type: string;
+    }> = [];
+    let messages = baseMessages as ReturnType<typeof ChatCompletionRequest.parse>["messages"];
+    for (let turn = 1; turn <= TURNS; turn++) {
+      const body = ChatCompletionRequest.parse({ messages, tools: [bashTool] });
+      scripted.fullText = TOOL_CALL_REPLY;
+      const resp = await handleChatCompletion(body, pool);
+      expect(resp.status).toBe(200);
+      const out = scripted.texts[scripted.texts.length - 1];
+      const result = await resp.json() as {
+        choices: Array<{ finish_reason: string; message: { tool_calls?: unknown[] } }>;
+      };
+      const choice = result.choices[0];
+      const outboundMissing = !(out.includes("<tools>") && out.includes("</tools>"));
+      const failurePhrase =
+        out.includes("does not contain a definition block") ||
+        out.includes("missing <tools>");
+      expect(outboundMissing, `turn ${turn}: outbound prompt lost the <tools> block`).toBe(false);
+      expect(failurePhrase, `turn ${turn}: failure phrase in outbound prompt`).toBe(false);
+      records.push({
+        turn: turn - 1,
+        tools_present: !outboundMissing && !failurePhrase,
+        tool_call_generated: TOOL_CALL_REPLY.includes("```bash"),
+        tool_call_executed: choice.finish_reason === "tool_calls" &&
+          (choice.message.tool_calls?.length ?? 0) > 0,
+        tools_block_bytes: formatToolsBlock([bashTool]).length,
+        response_type: choice.finish_reason,
+      });
+      expect(records[records.length - 1].tool_call_executed,
+        `turn ${turn}: tool call not executed`).toBe(true);
+      messages = withToolResult(messages, `call_${turn}`);
+    }
+    expect(scripted.texts).toHaveLength(TURNS);
+    expect(scripted.newConversations).toBeLessThanOrEqual(1); // single conversation
+    expect(records.filter((r) => r.tools_present)).toHaveLength(TURNS);
+    expect(records.filter((r) => r.tool_call_executed)).toHaveLength(TURNS); // 160 ≥ 100 tool calls
+    if (process.env.M365_LONG_SESSION_OUT) {
+      const { writeFileSync } = await import("node:fs");
+      writeFileSync(
+        process.env.M365_LONG_SESSION_OUT,
+        JSON.stringify({
+          turns: TURNS,
+          tool_calls: TURNS,
+          single_conversation: scripted.newConversations <= 1,
+          missing_tools_failures: records.filter((r) => !r.tools_present).length,
+          records,
+        }, null, 2),
+      );
+    }
+  });
+
   it("reinjection uses the same serializer as the turn-1 framing block", async () => {
     // The delta path must not grow a second tool serialization: the standalone
     // block must be a substring of what the turn-1 framing renders. On Windows

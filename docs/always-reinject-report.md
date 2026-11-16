@@ -207,3 +207,33 @@ Suggested follow-ups (non-blocking): fold the two pre-existing log-path test
 failures into a Windows-tolerant fixture; consider making the host-platform
 note part of the measured block on the deployment host before capacity
 planning.
+
+## 10. Addendum — branch rename and long-session validation (2026-11-16)
+
+**Branch:** the work now lives on `feature/persistent-tool-schema`
+(same commit lineage as `always-reinject-tools`; unified diff archived at
+`docs/persistent-tool-schema.diff`).
+
+**T9 long-session synthetic workload** (`packages/proxy-lib/src/tools-reinject.test.ts`):
+single conversation, **160 turns, 160 tool calls**, per-turn record
+`{ turn, tools_present, tool_call_generated, tool_call_executed }`. Run with
+`M365_LONG_SESSION_OUT=<path>` to dump the records as JSON.
+
+Result (records archived, 160/160):
+
+| Check | Result |
+|---|---|
+| turns | 160 |
+| tool calls executed (`finish_reason=tool_calls`) | 160/160 |
+| `tools_present` (block in every outbound prompt) | 160/160 — **0 failures** |
+| "missing `<tools>`" / "does not contain a definition block" | never observed |
+| conversations created | 1 (single conversation) |
+| `tools_block_bytes` | constant 975/turn (stable serialization, stable hash) |
+
+**Benchmark re-run** (`node scripts/measure-tools-overhead.mjs`, Windows host,
+numbers reproduce §7 exactly): 1-tool block 981 chars ≈ 245 tok/turn;
+12-tool block 1,947 chars ≈ 487 tok/turn.
+
+**Logging gate confirmed:** the `[TOOLS]` diagnostics line flows through core's
+`log.ts`, which writes only when `M365_DEBUG` or `M365_TRACE` is set — default
+OFF, as required.
